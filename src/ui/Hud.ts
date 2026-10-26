@@ -14,6 +14,9 @@ export class Hud {
   private level: HTMLElement;
   private toasts: HTMLElement;
   private help: HTMLElement;
+  private clockTime: HTMLElement;
+  private clockDay: HTMLElement;
+  private wrongWay: HTMLElement;
   lang: Lang = 'en';
 
   constructor() {
@@ -21,6 +24,8 @@ export class Hud {
     this.el.id = 'hud';
     this.el.innerHTML = `
       <div class="hud-road"><span class="road-name"></span><span class="road-level"></span></div>
+      <div class="hud-clock"><span class="time"></span><span class="day"></span></div>
+      <div class="hud-wrongway">WRONG WAY · উল্টো পথ</div>
       <div class="hud-speedo">
         <svg viewBox="0 0 120 120"><path class="arc-bg" d="M 22 92 A 48 48 0 1 1 98 92" />
         <path class="arc" d="M 22 92 A 48 48 0 1 1 98 92" /></svg>
@@ -47,6 +52,9 @@ export class Hud {
     this.level = q('.road-level');
     this.toasts = q('.hud-toasts');
     this.help = q('.hud-help');
+    this.clockTime = q('.hud-clock .time');
+    this.clockDay = q('.hud-clock .day');
+    this.wrongWay = q('.hud-wrongway');
     const len = this.rpmArc.getTotalLength();
     this.rpmArc.style.strokeDasharray = `${len}`;
     this.rpmArc.dataset.len = String(len);
@@ -70,6 +78,12 @@ export class Hud {
     this.road.textContent = name || (bus.onRoad ? '' : this.lang === 'bn' ? 'রাস্তার বাইরে' : 'Off road');
     this.level.textContent = bus.level > 0 ? (this.lang === 'bn' ? ' · ফ্লাইওভার' : ' · Flyover') : '';
     this.el.querySelector('.hud-road')!.classList.toggle('empty', !this.road.textContent);
+  }
+
+  setClock(time: string, day: string, wrongWay: boolean) {
+    this.clockTime.textContent = time;
+    this.clockDay.textContent = day;
+    this.wrongWay.classList.toggle('show', wrongWay);
   }
 
   toast(text: string, kind: 'bad' | 'info' = 'info') {

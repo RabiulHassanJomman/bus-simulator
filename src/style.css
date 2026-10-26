@@ -16,7 +16,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #d8d1c1; fon
 #loading .title { font-size: 34px; font-weight: 700; letter-spacing: 0.02em; }
 #loading .sub { margin-top: 10px; color: var(--ui-dim); }
 #debug {
-  position: fixed; left: 8px; top: 8px; padding: 8px 10px; background: var(--ui-bg); color: var(--ui-fg);
+  position: fixed; left: 16px; top: 64px; padding: 8px 10px; background: var(--ui-bg); color: var(--ui-fg);
   font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; border-radius: 6px; white-space: pre; pointer-events: none;
 }
 #attribution {
@@ -87,6 +87,20 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #d8d1c1; fon
 .hud-help b { color: var(--ui-fg); }
 .hud-help.fade { opacity: 0; }
 
+.hud-clock {
+  position: absolute; left: 16px; top: 12px; background: var(--ui-bg); border-radius: 8px; padding: 6px 12px;
+  display: flex; flex-direction: column; font-variant-numeric: tabular-nums;
+}
+.hud-clock .time { font-weight: 700; font-size: 16px; }
+.hud-clock .day { font-size: 11px; color: var(--ui-dim); }
+.hud-wrongway {
+  position: absolute; top: 96px; left: 50%; transform: translateX(-50%); background: #c62828; color: #fff;
+  font-weight: 800; padding: 8px 18px; border-radius: 6px; letter-spacing: 0.05em; display: none;
+  animation: blink 0.8s steps(2) infinite;
+}
+.hud-wrongway.show { display: block; }
+@keyframes blink { 50% { opacity: 0.35; } }
+
 /* ---- touch driving controls */
 #touch-drive { position: fixed; inset: 0; pointer-events: none; z-index: 6; user-select: none; -webkit-user-select: none; }
 #touch-drive .wheel {
@@ -119,6 +133,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #d8d1c1; fon
   #touch-buttons { top: 10px; bottom: auto; left: 10px; }
   #touch-buttons button { padding: 8px 10px; min-height: 40px; font-size: 13px; }
   .hud-help { display: none; }
+  .hud-clock { top: auto; bottom: 330px; left: 10px; padding: 4px 8px; }
+  .hud-clock .time { font-size: 13px; }
   .hud-stats { top: 10px; right: 10px; min-width: 0; padding: 6px 10px; font-size: 12px; gap: 3px; }
   .hud-stats .bar { width: 50px; flex: none; }
   .hud-road { top: 62px; max-width: calc(100vw - 24px); overflow: hidden; text-overflow: ellipsis; font-size: 13px; padding: 4px 12px; }

@@ -13,6 +13,16 @@ import { BUSES } from './game/BusPhysics';
 import { Input } from './game/Input';
 import { AudioEngine, HORN_STYLES } from './audio/AudioEngine';
 import { BACKGROUND } from './render/palette';
+import { Clock, WEEKDAYS, WEEKDAYS_BN } from './game/Clock';
+import { decodeGraph } from './shared/graph';
+import { Router } from './game/Router';
+import { Signals } from './game/traffic/Signals';
+import { Traffic, type Obstacle } from './game/traffic/Traffic';
+import { Pedestrians } from './game/traffic/Pedestrians';
+import { buildAtlas } from './render/TrafficArt';
+import { TrafficView } from './render/TrafficView';
+import { Rules } from './game/Rules';
+import { obbCorners, satPolygons } from './game/CollisionWorld';
 import { project, unproject } from './shared/geo';
 import type { WorldIndex } from './shared/format';
 
@@ -59,8 +69,49 @@ async function boot() {
   const map = new MapView(app, world, cam);
   map.lang = settings.lang;
   app.stage.addChild(map.mini, map.full);
+  const clock = new Clock(0, 8, 30); // Sunday 8:30 — the morning rush
+  const rules = new Rules();
+  // ---- traffic: road graph loads in the background; the city fills up once it arrives
+  interface Sim {
+    traffic: Traffic;
+    peds: Pedestrians;
+    signals: Signals;
+    router: Router;
+    view: TrafficView;
+  }
+  let sim: Sim | null = null;
+  // Dhaka's notorious jam hotspots: denser traffic that builds and clears over time
+  const HOTSPOTS = [
+    [23.7577, 90.3897],
+    [23.778, 90.4005],
+    [23.7239, 90.4126],
+    [23.7105, 90.4345],
+    [23.7383, 90.3958],
+  ].map(([la, lo]) => project(lo, la));
+  (async () => {
+    const res = await fetch('data/graph.dgz');
+    if (!res.ok || !res.body) throw new Error('graph.dgz missing');
+    const raw = await new Response(res.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+    const g = decodeGraph(raw);
+    const signals = new Signals(g);
+    const traffic = new Traffic(g, signals);
+    traffic.hotspot = (x, y) => {
+      let w = 0;
+      HOTSPOTS.forEach(([hx, hy], i) => {
+        const d = Math.hypot(x - hx, y - hy);
+        if (d < 1500) w += Math.exp(-((d / 700) ** 2)) * (0.6 + 0.4 * Math.sin(traffic.time / 240 + i * 1.7));
+      });
+      return Math.min(1.5, w * 1.2);
+    };
+    const peds = new Pedestrians(g, traffic);
+    const view = new TrafficView(world, buildAtlas(app.renderer));
+    sim = { traffic, peds, signals, router: new Router(g), view };
+    Object.assign((window as unknown as { __game: object }).__game, { sim });
+  })().catch((e) => console.error('traffic disabled:', e));
+  const hitCooldown = new Map<number, number>();
   const hud = new Hud();
   hud.lang = settings.lang;
+  const obstacles: Obstacle[] = [];
   const audio = new AudioEngine();
   const input = new Input();
 
@@ -209,11 +260,67 @@ async function boot() {
         acc -= PHYS_DT;
       }
     }
+    // ---- traffic, pedestrians, rules
+    clock.tick(dt);
+    if (sim && !pendingSnap) {
+      const p0 = bus.phys;
+      const density = clock.density() * preset.traffic;
+      obstacles.length = 0;
+      obstacles.push({ x: p0.cx, y: p0.cy, h: p0.heading, hl: p0.spec.length / 2, hw: p0.spec.width / 2, vx: p0.vx, vy: p0.vy });
+      sim.peds.obstacles(obstacles);
+      const vr = Math.hypot(cam.width, cam.height) / 2 / cam.zoom;
+      sim.traffic.update(dt, { x: p0.cx, y: p0.cy }, obstacles, density, clock.truckShare(), vr);
+      sim.peds.update(dt, { x: p0.cx, y: p0.cy, vx: p0.vx, vy: p0.vy, heading: p0.heading, hl: p0.spec.length / 2, hw: p0.spec.width / 2 }, density);
+      // bus vs road users: SAT boxes, momentum shared by mass
+      const corners = obbCorners(p0.obb());
+      for (const v of sim.traffic.query(p0.cx, p0.cy, 16)) {
+        if (v.level !== bus.level) continue;
+        const vc = obbCorners({ cx: v.x, cy: v.y, hl: v.spec.length / 2, hw: v.spec.width / 2, fx: Math.cos(v.heading), fy: Math.sin(v.heading) });
+        const c = satPolygons(corners, vc);
+        if (!c) continue;
+        const M = p0.spec.mass;
+        const busShare = v.spec.mass / (v.spec.mass + M);
+        const rel = (p0.vx - Math.cos(v.heading) * v.v) * c.nx + (p0.vy - Math.sin(v.heading) * v.v) * c.ny;
+        p0.x += c.nx * c.depth * busShare;
+        p0.y += c.ny * c.depth * busShare;
+        if (rel < 0) {
+          p0.vx -= 1.1 * rel * busShare * c.nx;
+          p0.vy -= 1.1 * rel * busShare * c.ny;
+        }
+        sim.traffic.shove(v, -c.nx, -c.ny, c.depth * (1 - busShare) + 0.05);
+        const impact = -rel;
+        if (impact > 1 && sim.traffic.time - (hitCooldown.get(v.id) ?? -9) > 2) {
+          hitCooldown.set(v.id, sim.traffic.time);
+          const lf = -c.nx * p0.fx - c.ny * p0.fy;
+          const lr = -c.nx * -p0.fy - c.ny * p0.fx;
+          const t = Math.min((p0.spec.length / 2) / Math.max(1e-3, Math.abs(lf)), (p0.spec.width / 2) / Math.max(1e-3, Math.abs(lr)));
+          bus.hitRoadUser(impact, v.spec.mass, v.spec.type, [lf * t, lr * t]);
+        }
+      }
+      for (const ped of sim.peds.hits) {
+        bus.fines += 5000;
+        hud.toast(settings.lang === 'bn' ? 'পথচারীকে ধাক্কা! জরিমানা ৳5,000' : 'You hit a pedestrian! Fine ৳5,000', 'bad');
+        audio.crash(3);
+        void ped;
+      }
+      for (const vio of rules.update(dt, bus, collision, sim.signals, sim.traffic.time)) {
+        bus.fines += vio.fine;
+        const msg =
+          vio.kind === 'red-light'
+            ? settings.lang === 'bn' ? `লাল বাতি অমান্য — জরিমানা ৳${vio.fine}` : `Ran a red light — fine ৳${vio.fine}`
+            : settings.lang === 'bn' ? `উল্টো পথে — জরিমানা ৳${vio.fine}` : `Wrong way on a one-way street — fine ৳${vio.fine}`;
+        hud.toast(msg, 'bad');
+      }
+      for (const h of sim.traffic.events.honks) audio.ambientHorn(Math.hypot(h.x - cam.x, h.y - cam.y), h.type);
+    }
+    hud.setClock(clock.label, (settings.lang === 'bn' ? WEEKDAYS_BN : WEEKDAYS)[clock.day], rules.wrongWay);
+
     for (const ev of bus.events) {
       if (ev.type === 'crash') {
         audio.crash(ev.impact!);
         if (ev.local) sprite.addDent(ev.local[0], ev.local[1], ev.level ?? 0.5);
-        hud.toast(`Collision at ${Math.round(ev.impact! * 3.6)} km/h — fine ৳${ev.fine}`, 'bad');
+        const what = ev.what ? ` with a ${ev.what === 'cng' ? 'CNG' : ev.what}` : '';
+        hud.toast(`Collision${what} at ${Math.round(ev.impact! * 3.6)} km/h — fine ৳${ev.fine}`, 'bad');
       } else if (ev.type === 'reset') hud.toast(`Back on the road — fine ৳${ev.fine}`, 'bad');
     }
     bus.events.length = 0;
@@ -246,6 +353,7 @@ async function boot() {
     cam.height = app.screen.height;
     cam.apply(world.root);
     world.update(cam.view(), cam.zoom, { x: p.cx, y: p.cy });
+    if (sim) sim.view.sync(sim.traffic, sim.peds, sim.signals, cam.view(10));
     labels.update(cam);
     map.update();
     hud.update(bus);
@@ -266,6 +374,7 @@ async function boot() {
         `zoom ${cam.zoom.toFixed(2)} px/m  ${follow ? 'follow' : 'free'}${rotateMode ? ' rotate' : ''}`,
         `bus ${blat.toFixed(5)}, ${blon.toFixed(5)}  level ${bus.level}  ${bus.onRoad ? 'on road' : 'off road'}`,
         `speed ${p.kmh.toFixed(1)} km/h  gear ${p.gear}  rpm ${Math.round(p.rpm)}  steer ${(p.steerAngle * 57.3).toFixed(0)}°`,
+        `traffic ${sim ? sim.traffic.vehicles.length : '…'} vehicles, ${sim ? sim.peds.peds.length : 0} pedestrians  density ${clock.density().toFixed(2)}`,
         `cursor ${mlat.toFixed(5)}, ${mlon.toFixed(5)}`,
       ];
     });
@@ -299,7 +408,7 @@ async function boot() {
     }
     return { update: tm.update / frames, labels: tm.labels / frames, render: tm.render / frames };
   };
-  Object.assign(window, { __game: { app, world, cam, labels, map, bench, bus, input, collision } });
+  Object.assign(window, { __game: { app, world, cam, labels, map, bench, bus, input, collision, clock, sim } });
 }
 
 boot().catch((e) => {

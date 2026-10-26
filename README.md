@@ -3,10 +3,10 @@
 A browser-based 2D top-down bus driving game set on the **real map of Dhaka**, generated from
 OpenStreetMap data at build time. TypeScript + Vite + PixiJS v8 (WebGL), deployable as a static site.
 
-> Status: **Phase 3** — drive a Dhaka local bus anywhere in the real city: bus physics, collisions
-> with buildings and MRT pillars, flyovers you can drive onto, keyboard/gamepad/touch controls and
-> synthesised sound, on a map of all of Dhaka with 3 levels of detail, labels, minimap and place
-> search. Traffic arrives in Phase 4.
+> Status: **Phase 4** — drive a Dhaka local bus through living traffic on the real city map:
+> rickshaws, CNGs, cars, motorcycles, buses, legunas, trucks, ambulances and police following the real
+> road graph with weak lane discipline, traffic signals and traffic police, jaywalking pedestrians and
+> vendors, fines for red lights, wrong-way driving and collisions. Routes and passengers arrive in Phase 5.
 
 ## Quick start
 
@@ -49,7 +49,7 @@ the nearest road, in the left lane (Bangladesh drives on the left). Graphics qua
 | Command | What it does |
 |---|---|
 | `npm run data:fetch` | Download/resume `data/raw/bangladesh-latest.osm.pbf` from Geofabrik |
-| `npm run data:build` | fetch → extract → chunk. `DHAKA_BBOX=core\|mid\|full` or `"minLat,minLon,maxLat,maxLon"`; `--force` re-extracts |
+| `npm run data:build` | fetch → extract → chunk → road graph. `DHAKA_BBOX=core\|mid\|full` or `"minLat,minLon,maxLat,maxLon"`; `--force` re-extracts |
 | `npm run data:validate` | Feature counts, PNG renders (`docs/img/`, full-res in `data/work/`), landmark + flyover position checks |
 | `npm test` | Unit tests (geometry, format) + landmark and flyover checks against built data |
 
@@ -121,6 +121,45 @@ Geofabrik PBF ──► tools/extract.ts ──► data/work/<bbox>/features.ndj
 * **Sound**: synthesised with WebAudio for now (diesel engine following rpm/throttle, four horn
   styles including the melodic "pressure horn", brake squeal, door hiss, crash). Recorded samples
   replace these in Phase 7.
+
+## Traffic (Phase 4)
+
+* **Road graph** (`tools/graph.ts` → `public/data/graph.dgz`, 1.4 MB): drivable OSM roads split at
+  junctions, way ends and signal nodes — 68.5k nodes, 88.9k edges, 99% in one connected component —
+  with one-way flags, flyover levels, lanes, widths, speed limits (OSM `maxspeed` or class defaults),
+  names and node-via turn restrictions (24 usable; via-way restrictions are skipped). Node positions,
+  edge lengths, geometry offsets and adjacency are derived on load; interior points are Int16 deltas.
+* **Router** (`src/game/Router.ts`): edge-based A* by travel time, so turn restrictions are exact;
+  respects one-way streets; profiles for bus, car and rickshaw (rickshaws are banned from primary/trunk
+  roads and flyovers, as on Dhaka's main roads). Tested: Farmgate → Shapla Chattar, Mirpur 10 →
+  Gulistan, Uttara → Sadarghat.
+* **Vehicles** (`src/game/traffic/`): spawned around the player on the real graph, weighted towards
+  main roads, appearing just outside the visible area. Intelligent Driver Model car-following against
+  anything in the lateral corridor ahead (other vehicles, the player's bus, crossing pedestrians).
+  Left-hand traffic; each type has its own kerb preference and "weave" factor — rickshaws hug the
+  kerb, CNGs and motorcycles squeeze past whatever is slow, buses stop for passengers in the middle of
+  the road. Random-walk routing at junctions favours straight on and bigger roads. Drivers honk when
+  held up (rate-limited, distance-attenuated).
+  Mix (daytime weights): rickshaw 26, car 18, CNG 17, motorcycle 14, bus 9, pickup 4, leguna 3,
+  taxi 2, police 0.8, ambulance 0.6; trucks 3% by day and 22% at night (city truck ban).
+* **Density** follows the game clock (1 real second = 1 game minute, starting Sunday 8:30): morning
+  and evening rush, quiet nights, near-empty Friday mornings; quality presets scale it; jam hotspots
+  (Farmgate, Mohakhali, Gulistan, Jatrabari, Shahbag) add traffic that builds and clears over time.
+* **Signals**: the 93 OSM signal nodes are clustered per junction into controllers with two phase
+  groups split by approach axis (green / 3 s yellow / 2 s all-red). Junctions where ≥3 major roads
+  with different names meet get a **traffic constable** instead (long manual phases, drawn on a stand
+  with white gloves pointing at the moving road) — 258 controllers in all, 218 police. 6% of signals
+  are broken (flashing amber; everyone slows and goes).
+* **Pedestrians**: walk the footpaths beside real roads, jaywalk (much more often at mapped
+  crossings), pause if a vehicle is right in front of them, dodge the bus (usually), and street
+  vendors stand with fruit carts on main roads.
+* **Rules & fines**: red light ৳500 (৳300 at a police junction), wrong way on a one-way street ৳300
+  (with a flashing banner), collisions by impact speed and the other vehicle's mass, ৳5,000 for
+  hitting a pedestrian.
+* **Cost**: ~2.5 ms CPU per frame for ~370 vehicles + ~100 pedestrians (browser); vehicles are
+  batched sprites from textures baked once at startup.
+* Beyond the ~330 m simulation radius there is no traffic simulation (no statistical-flow model
+  yet); vehicles appear and disappear just out of sight.
 
 ## Performance
 

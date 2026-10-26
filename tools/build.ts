@@ -5,15 +5,20 @@ import { join } from 'node:path';
 import { fetchPbf } from './fetch';
 import { extract } from './extract';
 import { buildChunks } from './chunk';
+import { buildGraph } from './graph';
 import { RAW_PBF, selectedBBox, workDir } from './config';
 
 async function main() {
+  if (process.argv.includes('--graph-only')) {
+    await buildGraph(selectedBBox().name);
+    return;
+  }
   const { name, bbox } = selectedBBox();
   const force = process.argv.includes('--force');
   console.log(`Dhaka data build — bbox "${name}" ${JSON.stringify(bbox)}`);
-  console.log('[1/3] source');
+  console.log('[1/4] source');
   await fetchPbf();
-  console.log('[2/3] extract');
+  console.log('[2/4] extract');
   const feats = join(workDir(name), 'features.ndjson');
   const statsFile = join(workDir(name), 'extract-stats.json');
   const fresh =
@@ -21,8 +26,10 @@ async function main() {
     (name !== 'custom');
   if (fresh) console.log('  extract cache is fresh (use --force to redo)');
   else extract(name, bbox);
-  console.log('[3/3] chunk');
+  console.log('[3/4] chunk');
   const index = await buildChunks(name, bbox);
+  console.log('[4/4] road graph');
+  await buildGraph(name);
   console.log('Counts:');
   for (const [k, v] of Object.entries(index.counts).sort()) console.log(`  ${k.padEnd(28)} ${v}`);
 }

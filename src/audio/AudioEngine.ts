@@ -187,6 +187,55 @@ export class AudioEngine {
     src.stop(t + dur + 0.05);
   }
 
+  private ambientBudget = 0;
+  private lastAmbient = 0;
+
+  /**
+   * A short horn from another road user `dist` metres away. Rate-limited (a few per second
+   * at most) and attenuated with distance so the city sounds busy but not unbearable.
+   */
+  ambientHorn(dist: number, kind: string) {
+    const ctx = this.ctx;
+    if (!ctx || dist > 140) return;
+    const now = ctx.currentTime;
+    this.ambientBudget = Math.min(3, this.ambientBudget + (now - this.lastAmbient) * 2.5);
+    this.lastAmbient = now;
+    if (this.ambientBudget < 1) return;
+    this.ambientBudget -= 1;
+    const vol = 0.11 * Math.max(0, 1 - dist / 140) ** 1.5;
+    const freqs: Record<string, [number, number, OscillatorType]> = {
+      motorcycle: [880, 1110, 'square'],
+      cng: [700, 0, 'square'],
+      rickshaw: [2200, 0, 'triangle'], // bicycle bell
+      bus: [440, 554, 'sawtooth'],
+      truck: [196, 247, 'sawtooth'],
+    };
+    const [f1, f2, type] = freqs[kind] ?? [520, 655, 'sawtooth'];
+    const dur = kind === 'rickshaw' ? 0.35 : 0.12 + Math.random() * 0.35;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(vol, now + 0.01);
+    g.gain.setValueAtTime(vol, now + dur);
+    g.gain.exponentialRampToValueAtTime(0.0005, now + dur + (kind === 'rickshaw' ? 0.6 : 0.05));
+    const f = ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.value = 2500 - dist * 10;
+    g.connect(f).connect(this.master);
+    for (const fr of [f1, f2]) {
+      if (!fr) continue;
+      const o = ctx.createOscillator();
+      o.type = type;
+      o.frequency.value = fr * (0.97 + Math.random() * 0.06);
+      o.connect(g);
+      o.start(now);
+      o.stop(now + dur + 0.7);
+      // rickshaw bell rings twice
+      if (kind === 'rickshaw') {
+        g.gain.setValueAtTime(vol, now + 0.18);
+      }
+    }
+  }
+
   crash(impact: number) {
     const s = Math.min(1, impact / 8);
     this.burst(0.25 + s * 0.4, 'lowpass', 500 + s * 900, 0.4 + s * 0.6);

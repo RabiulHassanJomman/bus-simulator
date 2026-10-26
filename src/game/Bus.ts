@@ -11,6 +11,8 @@ export interface BusEvent {
   /** local body point of the hit (x along, y across) */
   local?: [number, number];
   level?: number;
+  /** what was hit (road-user collisions) */
+  what?: string;
 }
 
 export class Bus {
@@ -72,6 +74,18 @@ export class Bus {
       local = [lf * t + (Math.random() - 0.5) * 0.6, lr * t];
     }
     this.events.push({ type: 'crash', impact, fine, local, level: sev });
+  }
+
+  /**
+   * Collision with another road user. Damage scales with the other's mass (a rickshaw barely
+   * scratches the bus, a truck dents it); the fine scales with impact speed.
+   */
+  hitRoadUser(impact: number, otherMass: number, what: string, local?: [number, number]) {
+    const massF = Math.min(1.5, otherMass / 4000 + 0.15);
+    this.damage = Math.min(100, this.damage + (impact - 0.5) ** 2 * 1.2 * massF);
+    const fine = Math.max(100, Math.round((impact * 3.6 * 30) / 50) * 50);
+    this.fines += fine;
+    this.events.push({ type: 'crash', impact, fine, local, level: Math.min(1, (impact / 8) * massF), what });
   }
 
   /** Elevation: change level only where both roads overlap (ramp junctions). */

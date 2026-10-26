@@ -212,3 +212,46 @@ export interface WorldIndex {
 export function chunkUrl(lod: number, cx: number, cy: number): string {
   return `data/lod${lod}/${cx}_${cy}.dbc`;
 }
+
+// ---- generic "JSON header + typed array sections" container (road graph etc.)
+type AnyArray = Int16Array | Uint8Array | Uint32Array | Int32Array | Float32Array | Float64Array;
+
+export function encodeSections(magic: number, meta: unknown, arrays: Record<string, AnyArray>): Uint8Array {
+  const sections: Record<string, [number, number, ArrayKind]> = {};
+  let off = 0;
+  for (const [name, a] of Object.entries(arrays)) {
+    off = (off + 7) & ~7;
+    sections[name] = [off, a.length, kindOf(a)];
+    off += a.byteLength;
+  }
+  const json = new TextEncoder().encode(JSON.stringify({ meta, sections }));
+  const binStart = (8 + json.length + 7) & ~7;
+  const out = new Uint8Array(binStart + off);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, magic, true);
+  dv.setUint32(4, json.length, true);
+  out.set(json, 8);
+  for (const [name, a] of Object.entries(arrays)) out.set(new Uint8Array(a.buffer, a.byteOffset, a.byteLength), binStart + sections[name][0]);
+  return out;
+}
+
+export function decodeSections<M>(buf: ArrayBuffer, magic: number): { meta: M; get: <T extends AnyArray>(name: string) => T } {
+  const dv = new DataView(buf);
+  if (dv.getUint32(0, true) !== magic) throw new Error('bad magic');
+  const jsonLen = dv.getUint32(4, true);
+  const { meta, sections } = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 8, jsonLen))) as {
+    meta: M;
+    sections: Record<string, [number, number, ArrayKind]>;
+  };
+  const binStart = (8 + jsonLen + 7) & ~7;
+  return {
+    meta,
+    get: <T extends AnyArray>(name: string) => {
+      const s = sections[name];
+      if (!s) throw new Error(`missing section ${name}`);
+      return new CTORS[s[2]](buf, binStart + s[0], s[1]) as unknown as T;
+    },
+  };
+}
+
+export const GRAPH_MAGIC = 0x31474244; // "DBG1"
