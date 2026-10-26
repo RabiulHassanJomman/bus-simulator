@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "data:build": "tsx tools/build.ts",
+    "data:build": "node --max-old-space-size=8192 --import tsx tools/build.ts",
     "data:fetch": "tsx tools/fetch.ts",
     "data:validate": "tsx tools/validate.ts",
     "test": "vitest run"

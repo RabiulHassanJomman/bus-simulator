@@ -19,6 +19,8 @@ export class GeoBuf {
   b = 0;
   a = 255;
   e = 0;
+  /** multiplier for round join/cap tessellation (lower at far LODs) */
+  segScale = 1;
 
   constructor(opts: { color?: boolean; extrude?: boolean } = { color: true }) {
     this.col = opts.color !== false ? new Uint8Array(2048) : null;
@@ -108,7 +110,7 @@ export class GeoBuf {
   stroke(pts: ArrayLike<number>, hw: number, caps = true) {
     const n = pts.length / 2;
     if (n < 2 || hw <= 0) return;
-    const segs = hw < 1 ? 6 : hw < 4 ? 10 : 16;
+    const segs = Math.max(4, Math.round((hw < 1 ? 6 : hw < 4 ? 10 : 16) * this.segScale));
     let pdx = 0;
     let pdy = 0;
     for (let i = 0; i < n - 1; i++) {

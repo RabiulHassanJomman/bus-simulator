@@ -9,7 +9,8 @@
 // The file on disk is gzip-compressed and served with a neutral extension (.dbc)
 // so no server adds Content-Encoding; the client inflates via DecompressionStream.
 //
-// Coordinates are Int16 decimetres relative to the chunk origin (cx*size, cy*size).
+// Coordinates are Int16 in 1/scale metres (decimetres at LOD0/1) relative to the
+// chunk origin (cx*size, cy*size).
 
 export const CHUNK_MAGIC = 0x31434244; // "DBC1" little-endian
 export const COORD_SCALE = 10; // decimetres
@@ -46,6 +47,8 @@ export interface ChunkHeader {
   cx: number;
   cy: number;
   size: number;
+  /** coordinate units per metre (10 = decimetres) */
+  scale?: number;
   strings: string[];
   /** Flat array, POINT_STRIDE per record. x/y in decimetres local. */
   points: number[];
@@ -63,6 +66,7 @@ export interface ChunkData {
   cx: number;
   cy: number;
   size: number;
+  scale: number;
   strings: string[];
   points: number[];
   land: AreaSection;
@@ -130,6 +134,7 @@ export function encodeChunk(c: ChunkData): Uint8Array {
     cx: c.cx,
     cy: c.cy,
     size: c.size,
+    scale: c.scale,
     strings: c.strings,
     points: c.points,
     sections,
@@ -164,6 +169,7 @@ export function decodeChunk(buf: ArrayBuffer): ChunkData {
     cx: header.cx,
     cy: header.cy,
     size: header.size,
+    scale: header.scale ?? COORD_SCALE,
     strings: header.strings,
     points: header.points,
     land: { pos: get('land.pos', 'i16'), kind: get('land.kind', 'u8'), idx: get('land.idx', 'u32') },

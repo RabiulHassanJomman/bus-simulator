@@ -7,7 +7,8 @@ import { buildChunk, type BuiltChunk, type LayerName } from '../src/world/buildC
 import { project } from '../src/shared/geo';
 import type { WorldIndex } from '../src/shared/format';
 import { PUBLIC_DATA, ROOT } from './config';
-import { LANDMARKS } from './landmarks';
+import { FLYOVERS, LANDMARKS, type Landmark } from './landmarks';
+import { LF_BRIDGE } from '../src/shared/kinds';
 
 export function loadIndex(): WorldIndex {
   return JSON.parse(readFileSync(join(PUBLIC_DATA, 'index.json'), 'utf8'));
@@ -29,8 +30,12 @@ export interface LandmarkResult {
   found?: string;
 }
 
-/** Nearest feature whose (English or Bangla) name matches, per landmark. */
-export function checkLandmarks(index: WorldIndex, chunks?: BuiltChunk[]): LandmarkResult[] {
+/**
+ * Nearest feature whose (English or Bangla) name matches, per landmark.
+ * With `elevated`, only bridge roads with layer > 0 count (flyover checks).
+ */
+export function checkLandmarks(index: WorldIndex, chunks?: BuiltChunk[], list: Landmark[] = LANDMARKS, elevated = false): LandmarkResult[] {
+  const LANDMARKS = list;
   const best = LANDMARKS.map(() => ({ d: Infinity, name: '' }));
   const targets = LANDMARKS.map((l) => project(l.lon, l.lat));
   const consider = (i: number, x: number, y: number, name: string) => {
@@ -41,13 +46,14 @@ export function checkLandmarks(index: WorldIndex, chunks?: BuiltChunk[]): Landma
     const ox = c.cx * c.size;
     const oy = c.cy * c.size;
     LANDMARKS.forEach((lm, i) => {
-      for (const p of c.points) {
+      if (!elevated) for (const p of c.points) {
         const n = `${p.name} ${p.nameBn}`;
         if (lm.match.test(n)) consider(i, p.x + ox, p.y + oy, n.trim());
       }
       for (const l of c.labels) {
         const n = `${l.name} ${l.nameBn}`;
         if (!lm.match.test(n)) continue;
+        if (elevated && !(l.flags & LF_BRIDGE && l.layer > 0)) continue;
         for (let k = 0; k < l.pts.length; k += 2) consider(i, l.pts[k] + ox, l.pts[k + 1] + oy, n.trim());
       }
     });
@@ -66,7 +72,7 @@ export function checkLandmarks(index: WorldIndex, chunks?: BuiltChunk[]): Landma
   });
 }
 
-const DRAW: LayerName[] = ['land', 'water', 'paths', 'roadCasing', 'roadFill', 'roadMark', 'rail', 'bldShadow', 'bld', 'bridgeShadow', 'bridges', 'metroShadow', 'metro'];
+const DRAW: LayerName[] = ['ground', 'shadow', 'upper'];
 
 /** Rasterise built chunk meshes (same geometry the game uploads to the GPU). */
 function render(chunks: BuiltChunk[], x0: number, y0: number, x1: number, y1: number, width: number, layers: LayerName[], out: string) {
@@ -77,7 +83,7 @@ function render(chunks: BuiltChunk[], x0: number, y0: number, x1: number, y1: nu
   ctx.fillStyle = '#d8d1c1';
   ctx.fillRect(0, 0, width, height);
   for (const name of layers) {
-    const shadow = name.endsWith('Shadow');
+    const shadow = name === 'shadow';
     for (const c of chunks) {
       const m = c.layers[name];
       if (!m) continue;
@@ -130,7 +136,7 @@ async function main() {
   mkdirSync(workOut, { recursive: true });
   mkdirSync(docOut, { recursive: true });
   const b = index.bounds;
-  const overview: LayerName[] = ['land', 'water', 'roadCasing', 'roadFill', 'rail', 'bld', 'bridges', 'metro'];
+  const overview: LayerName[] = ['ground', 'upper'];
   render(chunks, b.minX, b.minY, b.maxX, b.maxY, 4000, overview, join(workOut, 'map-full.png'));
   render(chunks, b.minX, b.minY, b.maxX, b.maxY, 1000, overview, join(docOut, `map-${index.bboxName}.png`));
   // close-up around Shahbag, all layers
@@ -142,7 +148,11 @@ async function main() {
   const res = checkLandmarks(index, chunks);
   for (const r of res)
     console.log(`  [${r.status}] ${r.name.padEnd(28)} ${r.distance !== undefined ? `${r.distance} m` : ''} ${r.found ? `← "${r.found}"` : ''}`);
-  const failed = res.filter((r) => r.status === 'FAIL');
+  console.log('Flyovers (bridge, layer > 0):');
+  const fly = checkLandmarks(index, chunks, FLYOVERS, true);
+  for (const r of fly)
+    console.log(`  [${r.status}] ${r.name.padEnd(32)} ${r.distance !== undefined ? `${r.distance} m` : ''} ${r.found ? `← "${r.found}"` : ''}`);
+  const failed = [...res, ...fly].filter((r) => r.status === 'FAIL');
   if (failed.length) {
     console.error(`${failed.length} landmark check(s) failed`);
     process.exitCode = 1;

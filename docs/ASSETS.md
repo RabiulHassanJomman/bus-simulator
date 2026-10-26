@@ -21,4 +21,9 @@ None yet.
 
 ## Fonts
 
-None yet (system UI font).
+| Asset | Source | License | Author |
+|---|---|---|---|
+| Noto Sans | Google Fonts — https://fonts.google.com/noto/specimen/Noto+Sans | SIL Open Font License 1.1 | Google / Noto project |
+| Noto Sans Bengali | Google Fonts — https://fonts.google.com/noto/specimen/Noto+Sans+Bengali | SIL Open Font License 1.1 | Google / Noto project |
+
+Fonts are loaded from the Google Fonts CDN at runtime (not redistributed in the repo).

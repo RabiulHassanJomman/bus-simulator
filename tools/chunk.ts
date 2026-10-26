@@ -6,11 +6,10 @@ import { gzipSync } from 'node:zlib';
 import earcut from 'earcut';
 import { bboxOf, centroid, clipLine, clipRing, signedArea, simplify, simplifyRing, type Flat } from './lib/geom';
 import { CHUNK_SIZE, LAT0, LON0, project, type BBox } from '../src/shared/geo';
-import { AREA_Z, AreaKind, LineKind, PointKind } from '../src/shared/kinds';
-import { encodeChunk, LINE_STRIDE, COORD_SCALE, type WorldIndex } from '../src/shared/format';
+import { AREA_Z, AreaKind, LineKind, PointKind, RoadClass, WaterwayClass } from '../src/shared/kinds';
+import { encodeChunk, LINE_STRIDE, type WorldIndex } from '../src/shared/format';
 import { PUBLIC_DATA, workDir } from './config';
 
-const LINE_MARGIN = 24; // metres of overlap so stroked lines join seamlessly across chunks
 
 interface AreaPiece {
   z: number;
@@ -43,6 +42,7 @@ class ChunkBuilder {
     public cx: number,
     public cy: number,
     public size: number,
+    public scale: number,
   ) {}
   get ox() {
     return this.cx * this.size;
@@ -66,7 +66,7 @@ class ChunkBuilder {
       if (r > 0) holes.push(pos.length / 2);
       const ring = rings[r];
       for (let i = 0; i < ring.length; i += 2) {
-        pos.push(clamp16(Math.round((ring[i] - this.ox) * COORD_SCALE)), clamp16(Math.round((ring[i + 1] - this.oy) * COORD_SCALE)));
+        pos.push(clamp16(Math.round((ring[i] - this.ox) * this.scale)), clamp16(Math.round((ring[i + 1] - this.oy) * this.scale)));
       }
     }
     return { pos, holes };
@@ -89,7 +89,7 @@ class ChunkBuilder {
   addLine(meta: number[], pts: Flat, wayId: number) {
     const q: number[] = [];
     for (let i = 0; i < pts.length; i += 2)
-      q.push(clamp16(Math.round((pts[i] - this.ox) * COORD_SCALE)), clamp16(Math.round((pts[i + 1] - this.oy) * COORD_SCALE)));
+      q.push(clamp16(Math.round((pts[i] - this.ox) * this.scale)), clamp16(Math.round((pts[i + 1] - this.oy) * this.scale)));
     this.lines.push({ meta, pts: q, wayId });
   }
   empty() {
@@ -137,6 +137,7 @@ class ChunkBuilder {
       cx: this.cx,
       cy: this.cy,
       size: this.size,
+      scale: this.scale,
       strings: [...this.strings.keys()],
       points: this.points,
       land: packAreas(this.land),
@@ -172,12 +173,94 @@ interface Feature {
   area?: number;
 }
 
+/** Level-of-detail settings. LOD0 = full detail; LOD1/2 for zoomed-out views and the minimap. */
+interface LodSpec {
+  lod: number;
+  size: number;
+  scale: number;
+  lineMargin: number;
+  tol: { bld: number; area: number; water: number; line: number };
+  minArea: number; // m², land polygons
+  minWater: number; // m², water polygons
+  minBuilding: number; // m², Infinity = no buildings
+  minRoad: RoadClass;
+  minWaterway: WaterwayClass;
+  rail: boolean;
+  barriers: boolean;
+  points: (k: number, sub: string) => boolean;
+}
+
+const LODS: LodSpec[] = [
+  {
+    lod: 0, size: CHUNK_SIZE[0], scale: 10, lineMargin: 24,
+    tol: { bld: 0.25, area: 0.5, water: 0.8, line: 0.35 },
+    minArea: 0, minWater: 0, minBuilding: 0, minRoad: RoadClass.Path, minWaterway: WaterwayClass.Drain,
+    rail: true, barriers: true, points: () => true,
+  },
+  {
+    lod: 1, size: CHUNK_SIZE[1], scale: 10, lineMargin: 60,
+    tol: { bld: 1.2, area: 3, water: 2.5, line: 2 },
+    minArea: 2500, minWater: 600, minBuilding: 300, minRoad: RoadClass.Residential, minWaterway: WaterwayClass.Canal,
+    rail: true, barriers: false,
+    points: (k, sub) => k === PointKind.Station || k === PointKind.Landmark || (k === PointKind.Place && sub !== 'house'),
+  },
+  {
+    lod: 2, size: CHUNK_SIZE[2], scale: 2, lineMargin: 150,
+    tol: { bld: 5, area: 10, water: 8, line: 8 },
+    minArea: 60000, minWater: 8000, minBuilding: Infinity, minRoad: RoadClass.Secondary, minWaterway: WaterwayClass.River,
+    rail: true, barriers: false,
+    points: (k, sub) => k === PointKind.Place && ['city', 'town', 'suburb', 'quarter'].includes(sub),
+  },
+];
+
+/** Searchable named places for the place-search / teleport UI. */
+interface PlaceEntry {
+  n: string;
+  b?: string;
+  k: string;
+  x: number;
+  y: number;
+}
+
 export async function buildChunks(bboxName: string, bbox: BBox) {
   const t0 = Date.now();
-  const lod = 0;
-  const size = CHUNK_SIZE[lod];
   const [bx0, by0] = project(bbox.minLon, bbox.maxLat);
   const [bx1, by1] = project(bbox.maxLon, bbox.minLat);
+  const index: WorldIndex = {
+    version: 1,
+    generated: new Date().toISOString(),
+    source: '© OpenStreetMap contributors (ODbL), Geofabrik Bangladesh extract',
+    bboxName,
+    bbox,
+    bounds: { minX: bx0, minY: by0, maxX: bx1, maxY: by1 },
+    projection: { type: 'equirectangular', lat0: LAT0, lon0: LON0 },
+    lods: [],
+    counts: {},
+  };
+  const places = new Map<string, PlaceEntry>();
+  for (const spec of LODS) {
+    const r = await buildLod(spec, bboxName, bx0, by0, bx1, by1, spec.lod === 0 ? places : null);
+    index.lods.push({ lod: spec.lod, size: spec.size, chunks: r.chunks });
+    if (spec.lod === 0) index.counts = r.counts;
+  }
+  writeFileSync(join(PUBLIC_DATA, 'index.json'), JSON.stringify(index));
+  const placeList = [...places.values()];
+  writeFileSync(join(PUBLIC_DATA, 'places.json'), JSON.stringify(placeList));
+  console.log(`  places.json: ${placeList.length} searchable names (${((Date.now() - t0) / 1000).toFixed(1)}s total)`);
+  return index;
+}
+
+async function buildLod(
+  spec: LodSpec,
+  bboxName: string,
+  bx0: number,
+  by0: number,
+  bx1: number,
+  by1: number,
+  places: Map<string, PlaceEntry> | null,
+) {
+  const t0 = Date.now();
+  const { lod, size, lineMargin: M } = spec;
   const cx0 = Math.floor(bx0 / size);
   const cx1 = Math.floor(bx1 / size);
   const cy0 = Math.floor(by0 / size);
@@ -187,8 +270,17 @@ export async function buildChunks(bboxName: string, bbox: BBox) {
     if (cx < cx0 || cx > cx1 || cy < cy0 || cy > cy1) return null;
     const key = `${cx},${cy}`;
     let c = chunks.get(key);
-    if (!c) chunks.set(key, (c = new ChunkBuilder(lod, cx, cy, size)));
+    if (!c) chunks.set(key, (c = new ChunkBuilder(lod, cx, cy, size, spec.scale)));
     return c;
+  };
+  const inBounds = (x: number, y: number) => x >= bx0 && x <= bx1 && y >= by0 && y <= by1;
+  const addPlace = (name: string | undefined, nameBn: string | undefined, kind: string, x: number, y: number, prio: number) => {
+    if (!places || !(name || nameBn) || !inBounds(x, y)) return;
+    const key = `${(name || nameBn)!.toLowerCase()}|${kind}`;
+    const prev = places.get(key);
+    // keep the first occurrence, except places which prefer larger features
+    if (prev && prio <= 0) return;
+    places.set(key, { n: name || nameBn!, b: nameBn && nameBn !== name ? nameBn : undefined, k: kind, x: Math.round(x), y: Math.round(y) });
   };
   const counts: Record<string, number> = {};
   const count = (k: string) => (counts[k] = (counts[k] ?? 0) + 1);
@@ -198,17 +290,21 @@ export async function buildChunks(bboxName: string, bbox: BBox) {
     if (!line) continue;
     const f = JSON.parse(line) as Feature;
     if (f.t === 'b') {
-      const rings = f.rings!.map((r) => simplifyRing(r, 0.25)).filter((r) => r.length >= 6);
+      if (spec.minBuilding === Infinity) continue;
+      const rings = f.rings!.map((r) => simplifyRing(r, spec.tol.bld)).filter((r) => r.length >= 6);
       if (!rings.length) continue;
+      if (spec.minBuilding > 0 && Math.abs(signedArea(rings[0])) < spec.minBuilding) continue;
       const [cx, cy] = centroid(rings[0]);
       const c = get(Math.floor(cx / size), Math.floor(cy / size));
       if (!c) continue;
-      c.addBuilding(rings, f.h ?? 10);
+      c.addBuilding(lod > 0 ? [rings[0]] : rings, f.h ?? 10);
       count('buildings');
     } else if (f.t === 'a') {
-      const tol = f.k === AreaKind.Water ? 0.8 : 0.5;
-      const rings = f.rings!.map((r) => simplifyRing(r, tol)).filter((r) => r.length >= 6);
+      const water = f.k === AreaKind.Water;
+      const rings = f.rings!.map((r) => simplifyRing(r, water ? spec.tol.water : spec.tol.area)).filter((r) => r.length >= 6);
       if (!rings.length) continue;
+      const area = Math.abs(signedArea(rings[0]));
+      if (area < (water ? spec.minWater : spec.minArea)) continue;
       const [x0, y0, x1, y1] = bboxOf(rings[0]);
       let any = false;
       for (let cy = Math.floor(y0 / size); cy <= Math.floor(y1 / size); cy++)
@@ -218,23 +314,31 @@ export async function buildChunks(bboxName: string, bbox: BBox) {
           const ox = cx * size;
           const oy = cy * size;
           const inside = x0 >= ox && x1 <= ox + size && y0 >= oy && y1 <= oy + size;
-          const clipped = inside ? rings : rings.map((r) => clipRing(r, ox, oy, ox + size, oy + size)).filter((r, i) => i > 0 || r.length >= 6);
+          const clipped = inside ? rings : rings.map((r) => clipRing(r, ox, oy, ox + size, oy + size));
           if (!clipped.length || clipped[0].length < 6) continue;
           c.addArea(f.k!, clipped.filter((r) => r.length >= 6));
           any = true;
         }
-      if (any) count(f.k === AreaKind.Water ? 'water' : 'landuse');
+      if (any) count(water ? 'water' : 'landuse');
     } else if (f.t === 'l') {
-      const pts = simplify(f.pts!, 0.35);
+      if (f.k === LineKind.Road && (f.c ?? 0) < spec.minRoad) continue;
+      if (f.k === LineKind.Waterway && (f.c ?? 0) < spec.minWaterway) continue;
+      if (f.k === LineKind.Barrier && !spec.barriers) continue;
+      if ((f.k === LineKind.Rail || f.k === LineKind.Metro) && !spec.rail) continue;
+      const pts = simplify(f.pts!, spec.tol.line);
       const [x0, y0, x1, y1] = bboxOf(pts);
+      if (f.k === LineKind.Road && f.name && (f.c ?? 0) >= RoadClass.Service) {
+        const mid = Math.floor(pts.length / 4) * 2;
+        addPlace(f.name, f.nameBn, 'road', pts[mid], pts[mid + 1], 0);
+      }
       let any = false;
-      for (let cy = Math.floor((y0 - LINE_MARGIN) / size); cy <= Math.floor((y1 + LINE_MARGIN) / size); cy++)
-        for (let cx = Math.floor((x0 - LINE_MARGIN) / size); cx <= Math.floor((x1 + LINE_MARGIN) / size); cx++) {
+      for (let cy = Math.floor((y0 - M) / size); cy <= Math.floor((y1 + M) / size); cy++)
+        for (let cx = Math.floor((x0 - M) / size); cx <= Math.floor((x1 + M) / size); cx++) {
           const c = get(cx, cy);
           if (!c) continue;
           const ox = cx * size;
           const oy = cy * size;
-          const pieces = clipLine(pts, ox - LINE_MARGIN, oy - LINE_MARGIN, ox + size + LINE_MARGIN, oy + size + LINE_MARGIN);
+          const pieces = clipLine(pts, ox - M, oy - M, ox + size + M, oy + size + M);
           for (const p of pieces) {
             const meta = [
               f.k!, f.c ?? 0, f.f ?? 0, f.layer ?? 0, f.lanes ?? 0, c.str(f.name), c.str(f.nameBn), 0, 0,
@@ -246,42 +350,36 @@ export async function buildChunks(bboxName: string, bbox: BBox) {
         }
       if (any) count(lineLabel(f.k!));
     } else if (f.t === 'p') {
+      const kindName = PointKind[f.k!] ?? String(f.k);
+      if (f.k === PointKind.Place) addPlace(f.name, f.nameBn, f.sub ?? 'place', f.x!, f.y!, 1);
+      else if (f.k === PointKind.Landmark || f.k === PointKind.Station || f.k === PointKind.BusStop || (f.k === PointKind.Poi && (f.area ?? 0) > 2000))
+        addPlace(f.name, f.nameBn, kindName.toLowerCase(), f.x!, f.y!, 0);
+      if (!spec.points(f.k!, f.sub ?? '')) continue;
       const c = get(Math.floor(f.x! / size), Math.floor(f.y! / size));
       if (!c) continue;
       c.points.push(
-        f.k!, c.str(f.sub), Math.round((f.x! - c.ox) * COORD_SCALE), Math.round((f.y! - c.oy) * COORD_SCALE), c.str(f.name), c.str(f.nameBn),
+        f.k!, c.str(f.sub), Math.round((f.x! - c.ox) * c.scale), Math.round((f.y! - c.oy) * c.scale), c.str(f.name), c.str(f.nameBn),
       );
-      count(`points:${PointKind[f.k!] ?? f.k}`);
+      count(`points:${kindName}`);
     }
   }
 
   const outDir = join(PUBLIC_DATA, `lod${lod}`);
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
-  const index: WorldIndex = {
-    version: 1,
-    generated: new Date().toISOString(),
-    source: '© OpenStreetMap contributors (ODbL), Geofabrik Bangladesh extract',
-    bboxName,
-    bbox,
-    bounds: { minX: bx0, minY: by0, maxX: bx1, maxY: by1 },
-    projection: { type: 'equirectangular', lat0: LAT0, lon0: LON0 },
-    lods: [{ lod, size, chunks: {} }],
-    counts,
-  };
+  const written: Record<string, number> = {};
   let total = 0;
   for (const [key, c] of chunks) {
     if (c.empty()) continue;
     const gz = gzipSync(c.encode(), { level: 9 });
     writeFileSync(join(outDir, `${c.cx}_${c.cy}.dbc`), gz);
-    index.lods[0].chunks[key] = gz.length;
+    written[key] = gz.length;
     total += gz.length;
   }
-  writeFileSync(join(PUBLIC_DATA, 'index.json'), JSON.stringify(index));
   console.log(
-    `  chunks: ${Object.keys(index.lods[0].chunks).length} written, ${(total / 1e6).toFixed(2)} MB gz (${((Date.now() - t0) / 1000).toFixed(1)}s)`,
+    `  lod${lod}: ${Object.keys(written).length} chunks of ${size} m, ${(total / 1e6).toFixed(2)} MB gz (${((Date.now() - t0) / 1000).toFixed(1)}s)`,
   );
-  return index;
+  return { chunks: written, counts };
 }
 
 function lineLabel(k: number): string {

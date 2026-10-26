@@ -2,26 +2,46 @@ import { Application } from 'pixi.js';
 import { Camera } from './game/Camera';
 import { World } from './world/World';
 import { DebugOverlay } from './ui/DebugOverlay';
+import { MapView } from './ui/MapView';
+import { Labels } from './render/Labels';
+import { loadSettings, PRESETS, saveSettings } from './game/Settings';
 import { BACKGROUND } from './render/palette';
 import { project, unproject } from './shared/geo';
 import type { WorldIndex } from './shared/format';
 
 async function boot() {
+  // labels need the Bangla/Latin web fonts before the first Text is rasterised
+  await Promise.race([
+    Promise.all([document.fonts.load("600 12px 'Noto Sans'"), document.fonts.load("600 12px 'Noto Sans Bengali'", 'ঢাকা')]),
+    new Promise((r) => setTimeout(r, 3000)),
+  ]).catch(() => {});
   const index = (await (await fetch('data/index.json')).json()) as WorldIndex;
+  const settings = loadSettings();
+  const preset = PRESETS[settings.quality];
   const app = new Application();
   await app.init({
     resizeTo: window,
     background: BACKGROUND,
-    antialias: true,
+    antialias: preset.antialias,
     preference: 'webgl',
     autoDensity: true,
-    resolution: Math.min(window.devicePixelRatio || 1, 2),
+    resolution: Math.min(window.devicePixelRatio || 1, preset.maxResolution),
   });
   document.getElementById('app')!.appendChild(app.canvas);
 
   const world = new World(index);
+  world.shadows = preset.shadows;
   app.stage.addChild(world.root);
   const cam = new Camera();
+  const labels = new Labels();
+  labels.maxLabels = preset.maxLabels;
+  labels.lang = settings.lang;
+  app.stage.addChild(labels.container);
+  world.onChunkReady = (e) => labels.addChunk(e);
+  world.onChunkRemoved = (e) => labels.removeChunk(e);
+  const map = new MapView(app, world, cam);
+  map.lang = settings.lang;
+  app.stage.addChild(map.mini, map.full);
 
   // start at Shahbag, or at #lat,lon,zoom from the URL
   const [lat, lon, z] = (location.hash.slice(1) || '23.7383,90.3958,1.2').split(',').map(Number);
@@ -33,12 +53,13 @@ async function boot() {
   let drag: { x: number; y: number } | null = null;
   let mouse = { x: 0, y: 0 };
   canvas.addEventListener('pointerdown', (e) => {
+    if (map.isOpen) return;
     drag = { x: e.clientX, y: e.clientY };
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove', (e) => {
     mouse = { x: e.clientX, y: e.clientY };
-    if (!drag) return;
+    if (!drag || map.isOpen) return;
     const [ax, ay] = cam.screenToWorld(drag.x, drag.y);
     const [bx, by] = cam.screenToWorld(e.clientX, e.clientY);
     cam.x += ax - bx;
@@ -50,12 +71,23 @@ async function boot() {
     'wheel',
     (e) => {
       e.preventDefault();
+      if (map.isOpen) return;
       cam.zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
     },
     { passive: false },
   );
   const keys = new Set<string>();
-  window.addEventListener('keydown', (e) => keys.add(e.key.toLowerCase()));
+  window.addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    keys.add(k);
+    if (k === 'm') map.toggle();
+    if (k === 'escape' && map.isOpen) map.toggle(false);
+    if (k === 'b') {
+      labels.lang = map.lang = settings.lang = labels.lang === 'en' ? 'bn' : 'en';
+      saveSettings(settings);
+    }
+    if (k === 'n') labels.enabled = !labels.enabled;
+  });
   window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
 
   const debug = new DebugOverlay();
@@ -64,6 +96,7 @@ async function boot() {
 
   app.ticker.add((t) => {
     const dt = t.deltaMS / 1000;
+    if (map.isOpen) keys.clear();
     const pan = (600 / cam.zoom) * dt;
     if (keys.has('w') || keys.has('arrowup')) cam.y -= pan;
     if (keys.has('s') || keys.has('arrowdown')) cam.y += pan;
@@ -76,7 +109,9 @@ async function boot() {
     cam.width = app.screen.width;
     cam.height = app.screen.height;
     cam.apply(world.root);
-    world.update(cam.view());
+    world.update(cam.view(), cam.zoom);
+    labels.update(cam);
+    map.update();
 
     if (firstLoad && world.stats.loaded > 0 && world.loading === 0) {
       firstLoad = false;
@@ -87,7 +122,7 @@ async function boot() {
       const [wx, wy] = cam.screenToWorld(mouse.x, mouse.y);
       const [mlon, mlat] = unproject(wx, wy);
       return [
-        `chunks ${world.stats.visible} visible / ${world.stats.loaded} loaded / ${world.loading} loading`,
+        `quality ${settings.quality}  LOD ${world.lod}  chunks ${world.stats.visible} visible / ${world.stats.loaded} loaded / ${world.loading} loading`,
         `vertices ${(world.stats.vertices / 1e6).toFixed(2)}M`,
         `zoom ${cam.zoom.toFixed(2)} px/m`,
         `centre ${clat.toFixed(5)}, ${clon.toFixed(5)}`,
@@ -101,7 +136,27 @@ async function boot() {
     if (Number.isFinite(la) && Number.isFinite(lo)) [cam.x, cam.y] = project(lo, la);
     if (zz) cam.zoom = zz;
   });
-  Object.assign(window, { __game: { app, world, cam } });
+  /** Dev benchmark: per-stage cost of a frame, GPU-synchronised. */
+  const bench = (frames = 30) => {
+    const gl = (app.renderer as unknown as { gl: WebGL2RenderingContext }).gl;
+    const px = new Uint8Array(4);
+    const t = { update: 0, labels: 0, render: 0 };
+    for (let i = 0; i < frames; i++) {
+      let t0 = performance.now();
+      world.update(cam.view(), cam.zoom);
+      t.update += performance.now() - t0;
+      t0 = performance.now();
+      labels.update(cam);
+      map.update();
+      t.labels += performance.now() - t0;
+      t0 = performance.now();
+      app.renderer.render(app.stage);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      t.render += performance.now() - t0;
+    }
+    return { update: t.update / frames, labels: t.labels / frames, render: t.render / frames };
+  };
+  Object.assign(window, { __game: { app, world, cam, labels, map, bench } });
 }
 
 boot().catch((e) => {

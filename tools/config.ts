@@ -11,10 +11,10 @@ export const workDir = (bboxName: string) => join(ROOT, 'data/work', bboxName);
 
 /**
  * Bbox selection: DHAKA_BBOX=core|mid|full, or explicit
- * DHAKA_BBOX="minLat,minLon,maxLat,maxLon". Defaults to "core".
+ * DHAKA_BBOX="minLat,minLon,maxLat,maxLon". Defaults to "full".
  */
 export function selectedBBox(): { name: string; bbox: BBox } {
-  const v = process.env.DHAKA_BBOX ?? 'core';
+  const v = process.env.DHAKA_BBOX ?? 'full';
   if (BBOXES[v]) return { name: v, bbox: BBOXES[v] };
   const parts = v.split(',').map(Number);
   if (parts.length === 4 && parts.every(Number.isFinite)) {

@@ -6,7 +6,8 @@ import { clipLine, clipRing, signedArea, simplify, simplifyRing } from '../tools
 import { assembleRings } from '../tools/lib/rings';
 import { decodeChunk, encodeChunk } from '../src/shared/format';
 import { PUBLIC_DATA } from '../tools/config';
-import { checkLandmarks, loadIndex } from '../tools/validate';
+import { checkLandmarks, iterChunks, loadIndex } from '../tools/validate';
+import { FLYOVERS } from '../tools/landmarks';
 
 describe('projection', () => {
   it('round-trips and uses metres', () => {
@@ -55,6 +56,7 @@ describe('chunk format', () => {
       cx: 1,
       cy: -2,
       size: 512,
+      scale: 10,
       strings: ['Shahbag'],
       points: [1, 0, 10, 20, 0, -1],
       land: { pos: Int16Array.of(0, 0, 10, 0, 0, 10), kind: Uint8Array.of(1, 1, 1), idx: Uint32Array.of(0, 1, 2) },
@@ -72,8 +74,15 @@ describe('chunk format', () => {
 
 const hasData = existsSync(join(PUBLIC_DATA, 'index.json'));
 describe.skipIf(!hasData)('built data: landmarks', () => {
+  const index = hasData ? loadIndex() : null!;
+  const chunks = hasData ? [...iterChunks(index)] : [];
+  it('finds flyovers as elevated roads near their real location', () => {
+    const res = checkLandmarks(index, chunks, FLYOVERS, true);
+    const failed = res.filter((r) => r.status === 'FAIL');
+    expect(failed, JSON.stringify(failed)).toHaveLength(0);
+  });
   it('finds known Dhaka landmarks at their real coordinates', () => {
-    const res = checkLandmarks(loadIndex());
+    const res = checkLandmarks(index, chunks);
     const failed = res.filter((r) => r.status === 'FAIL');
     expect(failed, JSON.stringify(failed)).toHaveLength(0);
     expect(res.some((r) => r.status === 'PASS')).toBe(true);

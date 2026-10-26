@@ -68,6 +68,8 @@ export const RAIL_SLEEPER = 0x6a5c4d;
 export const RAIL_STEEL = 0x4e4a46;
 export const METRO_DECK = 0xc9c5bc;
 export const METRO_EDGE = 0x9a958b;
+export const STATION_ROOF = 0xd7d3c8;
+export const STATION_RIDGE = 0xa9a49a;
 export const BARRIER = 0x8a8278;
 export const RUNWAY = 0x55575a;
 

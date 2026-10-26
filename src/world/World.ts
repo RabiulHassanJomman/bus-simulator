@@ -1,4 +1,4 @@
-// Streams chunks around the camera and owns the layered scene graph.
+// Streams multi-LOD chunks around the camera and owns the layered scene graph.
 import { AlphaFilter, Container, Rectangle, type Geometry, type Mesh, type Shader } from 'pixi.js';
 import { LAYERS, SHADOW_LAYERS, type BuiltChunk, type LayerName } from './buildChunk';
 import { colorMesh, shadowMesh } from '../render/shaders';
@@ -6,88 +6,117 @@ import { WorkerPool } from './WorkerPool';
 import { chunkUrl, type WorldIndex } from '../shared/format';
 import type { Rect } from '../game/Camera';
 
-interface ChunkEntry {
+export interface ChunkEntry {
   key: string;
+  lod: number;
   cx: number;
   cy: number;
+  size: number;
   state: 'loading' | 'ready' | 'failed';
   meshes: Mesh<Geometry, Shader>[];
   built?: BuiltChunk;
   visible: boolean;
 }
 
-const MAX_IN_FLIGHT = 8;
-const KEEP_MARGIN_CHUNKS = 3;
+const MAX_IN_FLIGHT = 10;
+const KEEP_MARGIN_CHUNKS = 2;
+/** zoom (px/m) thresholds: >= LOD0_MIN → LOD0, >= LOD1_MIN → LOD1, else LOD2 */
+export const LOD0_MIN = 0.42;
+export const LOD1_MIN = 0.1;
 
 export class World {
   readonly root = new Container();
   readonly layers = {} as Record<LayerName, Container>;
-  /** Container for entities (vehicles, pedestrians) between ground and bridges. */
-  readonly entities = new Container();
+  /** Ground-level entities (vehicles, pedestrians): above shadows, below buildings/flyovers. */
+  readonly entities = new Container({ label: 'entities' });
+  /** Entities on flyovers/expressway decks: above the 'upper' layer. */
+  readonly entitiesElevated = new Container({ label: 'entitiesElevated' });
   readonly chunks = new Map<string, ChunkEntry>();
   private pool = new WorkerPool();
-  private shadowFilters: Container[] = [];
-  readonly size: number;
-  readonly available: Set<string>;
-  onChunkReady?: (c: BuiltChunk) => void;
-  onChunkRemoved?: (key: string) => void;
-  stats = { loaded: 0, visible: 0, vertices: 0, failed: 0, loadMs: 0 };
+  private shadowLayers: Container[] = [];
+  readonly lodSizes: number[];
+  readonly available: Set<string>[];
+  lod = 0;
+  shadows = true;
+  onChunkReady?: (c: ChunkEntry) => void;
+  onChunkRemoved?: (c: ChunkEntry) => void;
+  stats = { loaded: 0, visible: 0, vertices: 0, failed: 0 };
 
   constructor(public index: WorldIndex) {
-    this.size = index.lods[0].size;
-    this.available = new Set(Object.keys(index.lods[0].chunks));
+    this.lodSizes = index.lods.map((l) => l.size);
+    this.available = index.lods.map((l) => new Set(Object.keys(l.chunks)));
     for (const name of LAYERS) {
-      const c = new Container({ label: name });
+      const c = new Container({ label: name, sortableChildren: true });
       if (SHADOW_LAYERS.has(name)) {
         // render shadow volumes opaque, then composite once with alpha so overlaps don't darken
-        c.filters = [new AlphaFilter({ alpha: name === 'bldShadow' ? 0.3 : 0.26 })];
+        c.filters = [new AlphaFilter({ alpha: 0.3 })];
         c.filterArea = new Rectangle();
-        this.shadowFilters.push(c);
+        this.shadowLayers.push(c);
       }
       this.layers[name] = c;
       this.root.addChild(c);
-      if (name === 'bld') this.root.addChild(this.entities);
+      if (name === 'shadow') this.root.addChild(this.entities);
+      if (name === 'upper') this.root.addChild(this.entitiesElevated);
     }
   }
 
-  /** Request/unload chunks for the given view and cull meshes. */
-  update(view: Rect) {
-    const s = this.size;
-    const cx0 = Math.floor(view.x0 / s);
-    const cy0 = Math.floor(view.y0 / s);
-    const cx1 = Math.floor(view.x1 / s);
-    const cy1 = Math.floor(view.y1 / s);
+  pickLod(zoom: number): number {
+    const max = this.lodSizes.length - 1;
+    // hysteresis: stay in the current LOD within ±12% of a threshold
+    const h = (t: number, below: boolean) => t * (below ? 0.88 : 1.12);
+    let lod: number;
+    if (zoom >= h(LOD0_MIN, this.lod === 0)) lod = 0;
+    else if (zoom >= h(LOD1_MIN, this.lod <= 1)) lod = 1;
+    else lod = 2;
+    return Math.min(lod, max);
+  }
 
-    // load missing, nearest to centre first
-    const mx = (cx0 + cx1) / 2;
-    const my = (cy0 + cy1) / 2;
+  private range(view: Rect, lod: number) {
+    const s = this.lodSizes[lod];
+    return { x0: Math.floor(view.x0 / s), y0: Math.floor(view.y0 / s), x1: Math.floor(view.x1 / s), y1: Math.floor(view.y1 / s) };
+  }
+
+  /** Request/unload chunks for the given view and zoom; cull meshes. */
+  update(view: Rect, zoom: number) {
+    this.lod = this.pickLod(zoom);
+    const r = this.range(view, this.lod);
+
+    // load missing chunks of the active LOD, nearest to centre first
+    const mx = (r.x0 + r.x1) / 2;
+    const my = (r.y0 + r.y1) / 2;
     const want: Array<[number, number, number]> = [];
-    for (let cy = cy0 - 1; cy <= cy1 + 1; cy++)
-      for (let cx = cx0 - 1; cx <= cx1 + 1; cx++) {
-        const key = `${cx},${cy}`;
-        if (!this.available.has(key) || this.chunks.has(key)) continue;
-        want.push([cx, cy, (cx - mx) ** 2 + (cy - my) ** 2]);
+    const avail = this.available[this.lod];
+    let pendingInView = 0;
+    for (let cy = r.y0 - 1; cy <= r.y1 + 1; cy++)
+      for (let cx = r.x0 - 1; cx <= r.x1 + 1; cx++) {
+        const key = `${this.lod}:${cx},${cy}`;
+        if (!avail.has(`${cx},${cy}`)) continue;
+        const e = this.chunks.get(key);
+        const inView = cx >= r.x0 && cx <= r.x1 && cy >= r.y0 && cy <= r.y1;
+        if (!e) {
+          want.push([cx, cy, (cx - mx) ** 2 + (cy - my) ** 2]);
+          if (inView) pendingInView++;
+        } else if (e.state === 'loading' && inView) pendingInView++;
       }
     want.sort((a, b) => a[2] - b[2]);
     for (const [cx, cy] of want) {
       if (this.pool.inFlight >= MAX_IN_FLIGHT) break;
-      this.load(cx, cy);
+      this.load(this.lod, cx, cy);
     }
 
-    // unload far chunks, cull the rest
+    // unload: other LODs once the active LOD covers the view; far chunks of any LOD
     let visible = 0;
     for (const e of this.chunks.values()) {
       if (e.state === 'loading') continue;
+      const er = this.range(view, e.lod);
       const far =
-        e.cx < cx0 - KEEP_MARGIN_CHUNKS || e.cx > cx1 + KEEP_MARGIN_CHUNKS || e.cy < cy0 - KEEP_MARGIN_CHUNKS || e.cy > cy1 + KEEP_MARGIN_CHUNKS;
-      if (far) {
+        e.cx < er.x0 - KEEP_MARGIN_CHUNKS || e.cx > er.x1 + KEEP_MARGIN_CHUNKS || e.cy < er.y0 - KEEP_MARGIN_CHUNKS || e.cy > er.y1 + KEEP_MARGIN_CHUNKS;
+      if (far || (e.lod !== this.lod && pendingInView === 0)) {
         this.unload(e);
         continue;
       }
-      const vis = e.cx >= cx0 - 0 && e.cx <= cx1 && e.cy >= cy0 && e.cy <= cy1;
-      // line overlap means neighbours can draw into view: include 1-chunk ring cheaply
-      const near = e.cx >= cx0 - 1 && e.cx <= cx1 + 1 && e.cy >= cy0 - 1 && e.cy <= cy1 + 1;
-      const v = vis || near;
+      // line overlap means neighbours can draw into view: keep a 1-chunk ring visible
+      const v = e.cx >= er.x0 - 1 && e.cx <= er.x1 + 1 && e.cy >= er.y0 - 1 && e.cy <= er.y1 + 1;
       if (v !== e.visible) {
         e.visible = v;
         for (const m of e.meshes) m.visible = v;
@@ -96,22 +125,24 @@ export class World {
     }
     this.stats.visible = visible;
 
-    const pad = 200;
-    for (const c of this.shadowFilters) {
-      const r = c.filterArea!;
-      r.x = view.x0 - pad;
-      r.y = view.y0 - pad;
-      r.width = view.x1 - view.x0 + pad * 2;
-      r.height = view.y1 - view.y0 + pad * 2;
+    const pad = 200 / Math.max(zoom, 0.05);
+    for (const c of this.shadowLayers) {
+      c.visible = this.shadows && this.lod === 0;
+      const fr = c.filterArea!;
+      fr.x = view.x0 - pad;
+      fr.y = view.y0 - pad;
+      fr.width = view.x1 - view.x0 + pad * 2;
+      fr.height = view.y1 - view.y0 + pad * 2;
     }
   }
 
-  private load(cx: number, cy: number) {
-    const key = `${cx},${cy}`;
-    const e: ChunkEntry = { key, cx, cy, state: 'loading', meshes: [], visible: true };
+  private load(lod: number, cx: number, cy: number) {
+    const key = `${lod}:${cx},${cy}`;
+    const size = this.lodSizes[lod];
+    const e: ChunkEntry = { key, lod, cx, cy, size, state: 'loading', meshes: [], visible: true };
     this.chunks.set(key, e);
     this.pool
-      .load(chunkUrl(0, cx, cy))
+      .load(chunkUrl(lod, cx, cy))
       .then((built) => {
         if (this.chunks.get(key) !== e) return; // unloaded meanwhile
         e.built = built;
@@ -120,13 +151,15 @@ export class World {
           const d = built.layers[name];
           if (!d) continue;
           const m = SHADOW_LAYERS.has(name) ? shadowMesh(d) : colorMesh(d);
-          m.position.set(cx * this.size, cy * this.size);
+          m.position.set(cx * size, cy * size);
+          // coarser LODs underneath finer ones during transitions
+          m.zIndex = -lod;
           this.layers[name].addChild(m);
           e.meshes.push(m);
         }
         this.stats.loaded++;
         this.stats.vertices += built.stats.vertices;
-        this.onChunkReady?.(built);
+        this.onChunkReady?.(e);
       })
       .catch((err) => {
         console.warn('chunk failed', key, err);
@@ -145,10 +178,15 @@ export class World {
       this.stats.vertices -= e.built.stats.vertices;
     }
     this.chunks.delete(e.key);
-    this.onChunkRemoved?.(e.key);
+    this.onChunkRemoved?.(e);
   }
 
   get loading() {
     return this.pool.inFlight;
+  }
+
+  /** Fetch + tessellate a chunk without adding it to the scene (minimap). */
+  fetchChunk(lod: number, cx: number, cy: number) {
+    return this.pool.load(chunkUrl(lod, cx, cy));
   }
 }
