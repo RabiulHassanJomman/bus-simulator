@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.vite/
+data/raw/
+data/work/
+*.log
+.DS_Store
+.netlify/
