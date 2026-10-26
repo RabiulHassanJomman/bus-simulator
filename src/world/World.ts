@@ -31,6 +31,8 @@ export class World {
   readonly entities = new Container({ label: 'entities' });
   /** Entities on flyovers/expressway decks: above the 'upper' layer. */
   readonly entitiesElevated = new Container({ label: 'entitiesElevated' });
+  /** Always on top of the world (e.g. bus outline visible under flyovers). */
+  readonly top = new Container({ label: 'top' });
   readonly chunks = new Map<string, ChunkEntry>();
   private pool = new WorkerPool();
   private shadowLayers: Container[] = [];
@@ -58,6 +60,7 @@ export class World {
       if (name === 'shadow') this.root.addChild(this.entities);
       if (name === 'upper') this.root.addChild(this.entitiesElevated);
     }
+    this.root.addChild(this.top);
   }
 
   pickLod(zoom: number): number {
@@ -76,10 +79,27 @@ export class World {
     return { x0: Math.floor(view.x0 / s), y0: Math.floor(view.y0 / s), x1: Math.floor(view.x1 / s), y1: Math.floor(view.y1 / s) };
   }
 
-  /** Request/unload chunks for the given view and zoom; cull meshes. */
-  update(view: Rect, zoom: number) {
+  /**
+   * Request/unload chunks for the given view and zoom; cull meshes.
+   * `focus` (the player's bus) always keeps the surrounding LOD0 chunks loaded, because
+   * physics needs their collision data even when the camera shows a coarser LOD.
+   */
+  update(view: Rect, zoom: number, focus?: { x: number; y: number }) {
     this.lod = this.pickLod(zoom);
     const r = this.range(view, this.lod);
+    const keep0 = new Set<string>();
+    if (focus) {
+      const s0 = this.lodSizes[0];
+      const fx = Math.floor(focus.x / s0);
+      const fy = Math.floor(focus.y / s0);
+      for (let cy = fy - 1; cy <= fy + 1; cy++)
+        for (let cx = fx - 1; cx <= fx + 1; cx++) {
+          if (!this.available[0].has(`${cx},${cy}`)) continue;
+          const key = `0:${cx},${cy}`;
+          keep0.add(key);
+          if (!this.chunks.has(key) && this.pool.inFlight < MAX_IN_FLIGHT) this.load(0, cx, cy);
+        }
+    }
 
     // load missing chunks of the active LOD, nearest to centre first
     const mx = (r.x0 + r.x1) / 2;
@@ -111,12 +131,14 @@ export class World {
       const er = this.range(view, e.lod);
       const far =
         e.cx < er.x0 - KEEP_MARGIN_CHUNKS || e.cx > er.x1 + KEEP_MARGIN_CHUNKS || e.cy < er.y0 - KEEP_MARGIN_CHUNKS || e.cy > er.y1 + KEEP_MARGIN_CHUNKS;
-      if (far || (e.lod !== this.lod && pendingInView === 0)) {
+      const pinned = keep0.has(e.key);
+      if (!pinned && (far || (e.lod !== this.lod && pendingInView === 0))) {
         this.unload(e);
         continue;
       }
       // line overlap means neighbours can draw into view: keep a 1-chunk ring visible
-      const v = e.cx >= er.x0 - 1 && e.cx <= er.x1 + 1 && e.cy >= er.y0 - 1 && e.cy <= er.y1 + 1;
+      const ring = e.cx >= er.x0 - 1 && e.cx <= er.x1 + 1 && e.cy >= er.y0 - 1 && e.cy <= er.y1 + 1;
+      const v = ring && (e.lod === this.lod || pendingInView > 0);
       if (v !== e.visible) {
         e.visible = v;
         for (const m of e.meshes) m.visible = v;

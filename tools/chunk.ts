@@ -7,7 +7,7 @@ import earcut from 'earcut';
 import { bboxOf, centroid, clipLine, clipRing, signedArea, simplify, simplifyRing, type Flat } from './lib/geom';
 import { CHUNK_SIZE, LAT0, LON0, project, type BBox } from '../src/shared/geo';
 import { AREA_Z, AreaKind, LineKind, PointKind, RoadClass, WaterwayClass } from '../src/shared/kinds';
-import { encodeChunk, LINE_STRIDE, type WorldIndex } from '../src/shared/format';
+import { encodeChunk, BF_ELEVATED, LINE_STRIDE, type WorldIndex } from '../src/shared/format';
 import { PUBLIC_DATA, workDir } from './config';
 
 
@@ -23,6 +23,7 @@ interface BuildingPiece {
   tris: number[];
   outer: number;
   h: number;
+  flags: number;
 }
 interface LinePiece {
   meta: number[]; // without pt start/count
@@ -79,12 +80,12 @@ class ChunkBuilder {
     const piece: AreaPiece = { z: AREA_Z[kind] ?? 1, area: Math.abs(signedArea(rings[0])), kind, pos, tris };
     (kind === AreaKind.Water ? this.water : this.land).push(piece);
   }
-  addBuilding(rings: Flat[], h: number) {
+  addBuilding(rings: Flat[], h: number, flags = 0) {
     const { pos, holes } = this.q(rings);
     if (pos.length < 6) return;
     const tris = earcut(pos, holes.length ? holes : undefined, 2);
     if (!tris.length) return;
-    this.buildings.push({ pos, tris, outer: rings[0].length / 2, h: Math.min(255, Math.max(1, h)) });
+    this.buildings.push({ pos, tris, outer: rings[0].length / 2, h: Math.min(255, Math.max(1, h)), flags });
   }
   addLine(meta: number[], pts: Flat, wayId: number) {
     const q: number[] = [];
@@ -114,7 +115,9 @@ class ChunkBuilder {
     const bidx: number[] = [];
     const ring: number[] = [];
     const height: number[] = [];
+    const bflags: number[] = [];
     for (const b of this.buildings) {
+      bflags.push(b.flags);
       const base = bpos.length / 2;
       ring.push(base, b.outer);
       height.push(b.h);
@@ -142,7 +145,7 @@ class ChunkBuilder {
       points: this.points,
       land: packAreas(this.land),
       water: packAreas(this.water),
-      buildings: { pos: Int16Array.from(bpos), idx: Uint32Array.from(bidx), ring: Uint32Array.from(ring), height: Uint8Array.from(height) },
+      buildings: { pos: Int16Array.from(bpos), idx: Uint32Array.from(bidx), ring: Uint32Array.from(ring), height: Uint8Array.from(height), flags: Uint8Array.from(bflags) },
       lines: { pos: Int16Array.from(lpos), meta, wayId },
     });
   }
@@ -163,6 +166,7 @@ interface Feature {
   ms?: number;
   w?: number;
   h?: number;
+  el?: number;
   rings?: Flat[];
   pts?: Flat;
   x?: number;
@@ -297,7 +301,7 @@ async function buildLod(
       const [cx, cy] = centroid(rings[0]);
       const c = get(Math.floor(cx / size), Math.floor(cy / size));
       if (!c) continue;
-      c.addBuilding(lod > 0 ? [rings[0]] : rings, f.h ?? 10);
+      c.addBuilding(lod > 0 ? [rings[0]] : rings, f.h ?? 10, f.el ? BF_ELEVATED : 0);
       count('buildings');
     } else if (f.t === 'a') {
       const water = f.k === AreaKind.Water;

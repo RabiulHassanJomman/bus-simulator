@@ -1,11 +1,13 @@
 // Headless browser check: load the game at given views and save screenshots.
 // Usage: tsx tools/screenshot.ts <baseUrl> <outDir> [lat,lon,zoom[|action...] ...]
-// Actions: "key:m" presses a key, "type:text" types text, "wait:ms" waits, "eval:js" runs JS.
+// Actions: "key:m" presses a key, "type:text" types text, "wait:ms" waits, "eval:js" runs JS and prints the result, "hold:w+d:2000" holds keys.
 import puppeteer from 'puppeteer-core';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const CHROME = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
+
+const consoleErrors: string[] = [];
 
 async function main() {
   const [base = 'http://localhost:5173/', outDir = 'shots', ...views] = process.argv.slice(2);
@@ -21,7 +23,7 @@ async function main() {
   // MOBILE=1 emulates a phone (390x844, touch, DPR 2)
   if (process.env.MOBILE) await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   else await page.setViewport({ width: 1280, height: 800 });
-  const errors: string[] = [];
+  const errors = consoleErrors;
   page.on('console', (m) => {
     if (m.type() === 'error' || m.type() === 'warn') errors.push(`${m.type()}: ${m.text()}`);
   });
@@ -44,7 +46,15 @@ async function main() {
       if (kind === 'key') await page.keyboard.press(arg as never);
       else if (kind === 'type') await page.keyboard.type(arg, { delay: 30 });
       else if (kind === 'wait') await new Promise((r) => setTimeout(r, Number(arg)));
-      else if (kind === 'eval') await page.evaluate(arg);
+      else if (kind === 'eval') console.log('  eval →', JSON.stringify(await page.evaluate(`{${arg}}`)));
+      else if (kind === 'hold') {
+        // hold:key[+key2]:ms — press keys together for a duration
+        const [keysStr, ms] = arg.split(':');
+        const keys = keysStr.split('+');
+        for (const k of keys) await page.keyboard.down(k as never);
+        await new Promise((r) => setTimeout(r, Number(ms)));
+        for (const k of keys) await page.keyboard.up(k as never);
+      }
       await new Promise((r) => setTimeout(r, 600));
     }
     await page.waitForFunction(() => (window as any).__game.world.loading === 0, { timeout: 120000 });
@@ -65,6 +75,7 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error(e);
+  console.error(String(e).split('\n')[0]);
+  if (consoleErrors.length) console.error('Console:\n' + consoleErrors.slice(0, 30).join('\n'));
   process.exit(1);
 });

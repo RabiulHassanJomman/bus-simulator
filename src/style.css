@@ -48,3 +48,82 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #d8d1c1; fon
   padding: 12px 14px; min-height: 44px; cursor: pointer; touch-action: manipulation;
 }
 #touch-buttons button:active { background: rgba(233, 185, 52, 0.35); }
+
+/* ---- HUD */
+#hud { position: fixed; inset: 0; pointer-events: none; color: var(--ui-fg); z-index: 4; }
+.hud-road {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: var(--ui-bg);
+  padding: 6px 16px; border-radius: 18px; font-weight: 600; font-size: 15px; white-space: nowrap;
+}
+.hud-road.empty { display: none; }
+.road-level { color: var(--accent); }
+.hud-speedo { position: absolute; right: 214px; bottom: 18px; width: 120px; height: 120px; background: var(--ui-bg); border-radius: 50%; }
+.hud-speedo svg { position: absolute; inset: 0; }
+.hud-speedo path { fill: none; stroke-width: 7; stroke-linecap: round; }
+.hud-speedo .arc-bg { stroke: rgba(255, 255, 255, 0.12); }
+.hud-speedo .arc { stroke: var(--accent); transition: stroke-dashoffset 0.08s linear; }
+.hud-speedo .arc.red { stroke: #ef5350; }
+.hud-speedo .speed { position: absolute; top: 34px; width: 100%; text-align: center; font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.hud-speedo .unit { position: absolute; top: 74px; width: 100%; text-align: center; font-size: 11px; color: var(--ui-dim); }
+.hud-speedo .gear { position: absolute; bottom: 6px; width: 100%; text-align: center; font-weight: 700; color: var(--accent); }
+.hud-stats {
+  position: absolute; right: 16px; top: 12px; background: var(--ui-bg); border-radius: 8px; padding: 8px 12px;
+  font-size: 13px; display: grid; gap: 6px; min-width: 170px;
+}
+.hud-stats > div { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.hud-stats label { color: var(--ui-dim); }
+.hud-stats .bar { flex: 1; height: 6px; background: rgba(255, 255, 255, 0.12); border-radius: 3px; overflow: hidden; }
+.hud-stats .fill { height: 100%; width: 0; background: #43a047; }
+.hud-toasts { position: absolute; top: 56px; left: 50%; transform: translateX(-50%); display: grid; gap: 6px; justify-items: center; }
+.toast { background: var(--ui-bg); padding: 6px 14px; border-radius: 6px; font-weight: 600; transition: opacity 0.5s; }
+.toast.bad { border-left: 4px solid #e53935; }
+.toast.info { border-left: 4px solid var(--accent); }
+.toast.out { opacity: 0; }
+.hud-help {
+  position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); font-size: 12px; color: var(--ui-dim);
+  background: var(--ui-bg); padding: 5px 12px; border-radius: 6px; transition: opacity 1s; max-width: calc(100vw - 480px);
+  text-align: center;
+}
+.hud-help b { color: var(--ui-fg); }
+.hud-help.fade { opacity: 0; }
+
+/* ---- touch driving controls */
+#touch-drive { position: fixed; inset: 0; pointer-events: none; z-index: 6; user-select: none; -webkit-user-select: none; }
+#touch-drive .wheel {
+  position: absolute; left: 16px; bottom: 22px; width: 150px; height: 150px; pointer-events: auto; touch-action: none;
+}
+#touch-drive .wheel-inner {
+  width: 100%; height: 100%; border-radius: 50%; border: 14px solid rgba(30, 32, 38, 0.85);
+  box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.25); position: relative;
+}
+#touch-drive .wheel-inner span {
+  position: absolute; left: 50%; top: 50%; width: 100%; height: 12px; transform: translate(-50%, -50%);
+  background: rgba(30, 32, 38, 0.85);
+}
+#touch-drive .wheel-inner::after {
+  content: ''; position: absolute; left: 50%; top: -14px; width: 10px; height: 14px; margin-left: -5px; background: var(--accent);
+}
+#touch-drive .pedals { position: absolute; right: 16px; bottom: 150px; display: flex; gap: 10px; pointer-events: auto; }
+#touch-drive .pedal {
+  width: 74px; height: 110px; border-radius: 12px; border: none; font-weight: 700; color: #fff; touch-action: none;
+}
+#touch-drive .pedal.brake { background: rgba(198, 40, 40, 0.8); height: 90px; align-self: flex-end; }
+#touch-drive .pedal.gas { background: rgba(46, 125, 50, 0.85); }
+#touch-drive .pedal.down { filter: brightness(1.4); transform: scale(0.96); }
+#touch-drive .small-buttons { position: absolute; left: 180px; bottom: 26px; display: flex; gap: 8px; pointer-events: auto; }
+#touch-drive .small-buttons button {
+  width: 48px; height: 48px; border-radius: 50%; border: none; background: var(--ui-bg); color: #fff; font-size: 20px; touch-action: none;
+}
+#touch-drive .small-buttons button.down { background: rgba(233, 185, 52, 0.6); }
+@media (pointer: coarse) {
+  #touch-buttons { top: 10px; bottom: auto; left: 10px; }
+  #touch-buttons button { padding: 8px 10px; min-height: 40px; font-size: 13px; }
+  .hud-help { display: none; }
+  .hud-stats { top: 10px; right: 10px; min-width: 0; padding: 6px 10px; font-size: 12px; gap: 3px; }
+  .hud-stats .bar { width: 50px; flex: none; }
+  .hud-road { top: 62px; max-width: calc(100vw - 24px); overflow: hidden; text-overflow: ellipsis; font-size: 13px; padding: 4px 12px; }
+  .hud-toasts { top: 100px; }
+  .hud-speedo { right: auto; left: 10px; top: 100px; bottom: auto; transform: scale(0.72); transform-origin: top left; }
+  #touch-drive .small-buttons { left: 16px; bottom: 186px; }
+  #touch-drive .pedals { bottom: 22px; }
+}

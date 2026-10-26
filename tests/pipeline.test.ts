@@ -61,7 +61,7 @@ describe('chunk format', () => {
       points: [1, 0, 10, 20, 0, -1],
       land: { pos: Int16Array.of(0, 0, 10, 0, 0, 10), kind: Uint8Array.of(1, 1, 1), idx: Uint32Array.of(0, 1, 2) },
       water: { pos: new Int16Array(0), kind: new Uint8Array(0), idx: new Uint32Array(0) },
-      buildings: { pos: new Int16Array(0), idx: new Uint32Array(0), ring: new Uint32Array(0), height: new Uint8Array(0) },
+      buildings: { pos: new Int16Array(0), idx: new Uint32Array(0), ring: new Uint32Array(0), height: new Uint8Array(0), flags: new Uint8Array(0) },
       lines: { pos: Int16Array.of(1, 2, 3, 4), meta: new Int32Array(12), wayId: Float64Array.of(123456789012) },
     });
     const dec = decodeChunk(enc.buffer.slice(0) as ArrayBuffer);

@@ -19,6 +19,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       if (m.col) transfer.push(m.col.buffer as ArrayBuffer);
       if (m.ext) transfer.push(m.ext.buffer as ArrayBuffer);
     }
+    if (chunk.collision) transfer.push(chunk.collision.tris.buffer as ArrayBuffer, chunk.collision.pillars.buffer as ArrayBuffer, chunk.collision.cover.buffer as ArrayBuffer);
     (self as unknown as Worker).postMessage({ id, chunk, ms: performance.now() - t0 } satisfies WorkerResponse, transfer);
   } catch (err) {
     (self as unknown as Worker).postMessage({ id, error: String(err) } satisfies WorkerResponse);

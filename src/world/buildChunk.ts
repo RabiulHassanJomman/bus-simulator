@@ -3,6 +3,7 @@ import { GeoBuf, offsetLine, type MeshData } from '../render/geometry';
 import * as P from '../render/palette';
 import {
   decodeChunk,
+  BF_ELEVATED,
   LINE_STRIDE,
   L_CLASS,
   L_FLAGS,
@@ -62,7 +63,35 @@ export interface BuiltChunk {
   labels: RoadLabel[];
   points: PointOut[];
   stats: { vertices: number; buildings: number; lines: number };
+  /** LOD0 only: geometry for physics, road snapping and road-name lookup (local metres). */
+  collision?: ChunkCollision;
 }
+
+export interface CollisionRoad {
+  pts: Float32Array;
+  cls: number;
+  flags: number;
+  /** elevation level: > 0 on flyovers/expressway decks, 0 on the ground */
+  level: number;
+  hw: number; // half carriageway width, metres
+  lanes: number;
+  name: string;
+  nameBn: string;
+}
+
+export interface ChunkCollision {
+  /** building footprint triangles, 6 floats each */
+  tris: Float32Array;
+  /** MRT viaduct pillar centres (x, y), radius PILLAR_RADIUS */
+  pillars: Float32Array;
+  /** roads plus non-drivable overhead lines (MRT viaduct: cls 0, level 2) */
+  roads: CollisionRoad[];
+  /** footprints of elevated buildings (stations over roads): overhead cover only */
+  cover: Float32Array;
+}
+
+export const PILLAR_SPACING = 30;
+export const PILLAR_RADIUS = 1.0;
 
 
 function hash(a: number, b: number): number {
@@ -345,6 +374,73 @@ export function buildChunk(buf: ArrayBuffer): BuiltChunk {
     .filter((l) => (l.name || l.nameBn) && l.cls >= minLabel)
     .map((l) => ({ name: l.name, nameBn: l.nameBn, cls: l.cls, flags: l.flags, layer: l.layer, pts: Array.from(l.pts) }));
 
+  let collision: ChunkCollision | undefined;
+  if (detail) {
+    // ground-level building footprints only (elevated stations etc. don't block streets)
+    const triList: number[] = [];
+    const coverList: number[] = [];
+    for (let b = 0; b < nb; b++) {
+      const list = (B.flags[b] ?? 0) & BF_ELEVATED ? coverList : triList;
+      for (let t = triStart[b]; t < triStart[b + 1]; t++) list.push(B.pos[B.idx[t] * 2] * S, B.pos[B.idx[t] * 2 + 1] * S);
+    }
+    const tris = Float32Array.from(triList);
+    // viaduct pillars at fixed distances along each metro way; keep only those inside this
+    // chunk (pieces overlap neighbours) so every pillar exists exactly once
+    const pillars: number[] = [];
+    for (const l of lines) {
+      if (l.kind !== LineKind.Metro || l.flags & LF_TUNNEL) continue;
+      let d = l.start;
+      let next = Math.ceil(d / PILLAR_SPACING) * PILLAR_SPACING;
+      const p = l.pts;
+      for (let i = 0; i + 3 < p.length; i += 2) {
+        const len = Math.hypot(p[i + 2] - p[i], p[i + 3] - p[i + 1]);
+        while (next <= d + len) {
+          const t = len > 0 ? (next - d) / len : 0;
+          const x = p[i] + (p[i + 2] - p[i]) * t;
+          const y = p[i + 1] + (p[i + 3] - p[i + 1]) * t;
+          if (x >= 0 && y >= 0 && x < c.size && y < c.size) pillars.push(x, y);
+          next += PILLAR_SPACING;
+        }
+        d += len;
+      }
+    }
+    // each MRT track is its own OSM way, but one pillar carries both: merge close pairs
+    const merged: number[] = [];
+    const used = new Uint8Array(pillars.length / 2);
+    for (let i = 0; i < pillars.length / 2; i++) {
+      if (used[i]) continue;
+      let x = pillars[i * 2];
+      let y = pillars[i * 2 + 1];
+      for (let j = i + 1; j < pillars.length / 2; j++) {
+        if (used[j] || Math.hypot(pillars[j * 2] - x, pillars[j * 2 + 1] - y) > 9) continue;
+        used[j] = 1;
+        x = (x + pillars[j * 2]) / 2;
+        y = (y + pillars[j * 2 + 1]) / 2;
+        break;
+      }
+      merged.push(x, y);
+    }
+    pillars.length = 0;
+    pillars.push(...merged);
+    const croads: CollisionRoad[] = roads
+      .filter((l) => l.cls >= RoadClass.Track)
+      .map((l) => ({
+        pts: l.pts,
+        cls: l.cls,
+        flags: l.flags,
+        level: l.flags & LF_BRIDGE && l.layer > 0 ? l.layer : 0,
+        hw: roadWidth(l.cls, l.lanes, l.flags, l.w) / 2,
+        lanes: l.lanes,
+        name: l.name,
+        nameBn: l.nameBn,
+      }));
+    for (const l of lines) {
+      if (l.kind !== LineKind.Metro || l.flags & LF_TUNNEL) continue;
+      croads.push({ pts: l.pts, cls: 0, flags: l.flags, level: Math.max(2, l.layer), hw: railWidth(l.cls) / 2, lanes: 0, name: '', nameBn: '' });
+    }
+    collision = { tris, pillars: Float32Array.from(pillars), roads: croads, cover: Float32Array.from(coverList) };
+  }
+
   return {
     lod: c.lod,
     cx: c.cx,
@@ -354,6 +450,7 @@ export function buildChunk(buf: ArrayBuffer): BuiltChunk {
     labels,
     points,
     stats: { vertices, buildings: nb, lines: lines.length },
+    collision,
   };
 }
 

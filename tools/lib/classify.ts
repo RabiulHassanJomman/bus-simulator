@@ -112,7 +112,7 @@ export const KEEP_KEYS = new Set([
   'junction', 'ref', 'building', 'building:levels', 'height', 'landuse', 'leisure', 'natural', 'water', 'waterway',
   'amenity', 'railway', 'aeroway', 'area', 'width', 'service', 'access', 'man_made', 'shop', 'tourism', 'historic',
   'public_transport', 'bus', 'station', 'type', 'route', 'operator', 'network', 'from', 'to', 'restriction',
-  'barrier', 'place', 'crossing', 'office', 'healthcare', 'religion', 'level', 'location', 'covered', 'min_level',
+  'barrier', 'place', 'crossing', 'building:min_level', 'min_height', 'office', 'healthcare', 'religion', 'level', 'location', 'covered', 'min_level',
 ]);
 
 export function filterTags(t: Tags): Tags {
@@ -273,4 +273,17 @@ export function buildingHeight(t: Tags, id: number): number {
   // Dhaka's typical untagged building is 4-8 storeys.
   const r = ((id * 2654435761) % 4294967296) / 4294967296;
   return 9 + Math.floor(r * 16);
+}
+
+/**
+ * Buildings that stand above the street (MRT stations over roads, skywalks, buildings on
+ * stilts): rendered, but not ground obstacles. Note layer=1 alone is NOT enough: Dhaka
+ * mappers routinely put layer=1 on ordinary buildings.
+ */
+export function isElevatedBuilding(t: Tags): boolean {
+  const n = (v?: string) => (v ? parseFloat(v) || 0 : 0);
+  if (n(t.min_level) >= 1 || n(t['building:min_level']) >= 1 || n(t.min_height) >= 2.5) return true;
+  const layer = n(t.layer);
+  const transport = t.building === 'train_station' || t.building === 'transportation' || !!t.railway || t.public_transport === 'station';
+  return layer >= 3 || (layer >= 2 && transport);
 }

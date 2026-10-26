@@ -3,9 +3,10 @@
 A browser-based 2D top-down bus driving game set on the **real map of Dhaka**, generated from
 OpenStreetMap data at build time. TypeScript + Vite + PixiJS v8 (WebGL), deployable as a static site.
 
-> Status: **Phase 2** — the whole of Dhaka (Uttara → Jatrabari, Savar side → Purbachal) streamed
-> with 3 levels of detail, flyovers/expressway and MRT Line 6 with stations, Bangla/English labels,
-> minimap and a fullscreen map with place search. Driving starts in Phase 3.
+> Status: **Phase 3** — drive a Dhaka local bus anywhere in the real city: bus physics, collisions
+> with buildings and MRT pillars, flyovers you can drive onto, keyboard/gamepad/touch controls and
+> synthesised sound, on a map of all of Dhaka with 3 levels of detail, labels, minimap and place
+> search. Traffic arrives in Phase 4.
 
 ## Quick start
 
@@ -18,10 +19,30 @@ npm run dev             # http://localhost:5173
 `data:build` downloads the Bangladesh OSM extract (~360 MB, cached in `data/raw/`) and takes ~1.5 min
 for all of Dhaka (needs ~3 GB RAM).
 
-Controls (map viewer): drag or WASD/arrows to pan, mouse wheel or `+`/`-` to zoom, `Q`/`E` to rotate,
-`M` fullscreen map + place search (click to jump), `B` Bangla/English labels, `N` labels on/off,
-`F3` debug overlay. Jump anywhere with a URL hash: `http://localhost:5173/#23.7577,90.3897,2`
-(lat, lon, zoom in px/m). Graphics quality: `?quality=low|med|high` (default `med`, remembered).
+**After `npm run data:build`, restart `npm run dev`**: Vite caches public file sizes at startup
+and would otherwise serve truncated chunks.
+
+### Controls
+
+| Action | Keyboard | Gamepad | Touch |
+|---|---|---|---|
+| Accelerate / brake (hold brake when stopped = reverse) | `W`/`S` or `↑`/`↓` | RT / LT | GAS / BRAKE pedals |
+| Steer | `A`/`D` or `←`/`→` | left stick | steering wheel |
+| Handbrake | `Space` | A | — |
+| Horn (tap to spam, hold to blare; `Shift+H` changes horn) | `H` | B | 📯 |
+| Doors (left side) | `E` | X | 🚪 |
+| Headlights | `L` | RB | — |
+| Reset to road (৳100 fine) | `R` | Y | ↺ |
+| Camera: north-up / rotate with bus | `C` | LB | 🧭 |
+| Fullscreen map + place search (click to teleport) | `M` | Back | Map |
+| Bangla / English | `B` | — | বাং / EN |
+| Zoom | wheel, `+`/`-` | — | pinch |
+| Labels on/off, debug overlay | `N`, `F3` | — | — |
+
+Dragging the map detaches the camera; it follows the bus again as soon as you drive. Start anywhere
+with a URL hash: `http://localhost:5173/#23.7577,90.3897` (lat, lon[, zoom px/m]); the bus snaps to
+the nearest road, in the left lane (Bangladesh drives on the left). Graphics quality:
+`?quality=low|med|high` (default `med`, remembered).
 
 ### Data scripts
 
@@ -77,6 +98,30 @@ Geofabrik PBF ──► tools/extract.ts ──► data/work/<bbox>/features.ndj
   collision boxes: road names along their longest straight run (kept upright), flyovers highlighted,
   places by rank and zoom, metro stations and landmarks.
 
+## Driving model
+
+* **Physics** (`src/game/BusPhysics.ts`, pure TS): kinematic bicycle model posed at the rear axle so the
+  front overhang swings out in turns; speed-sensitive, rate-limited steering; 5-speed automatic with a
+  torque curve, rpm, governor, rolling resistance and drag; brakes that never reverse the bus;
+  handbrake slides the rear. Fixed 120 Hz step.
+  * Local bus (11 m, 11.5 t): 0–40 km/h in 9.5 s, 40–0 braking in 9.3 m, governed at 80 km/h,
+    rear-axle turning radius ~8 m.
+  * BRTC double-decker (10.5 m, 15.5 t): 0–40 km/h 10.5 s, 40–0 in 10.1 m, 70 km/h.
+* **Collisions** (`src/game/CollisionWorld.ts`): the worker returns building footprint triangles
+  (already earcut-triangulated), MRT pillar positions and road centrelines for every LOD0 tile; a
+  32 m grid per tile feeds SAT tests (bus box vs triangles, vs pillar circles). Contacts push the
+  bus out, remove velocity into the obstacle, and impacts > 1.2 m/s add damage, a fine and a dent on
+  the sprite. LOD0 tiles around the bus stay loaded at any zoom so physics never loses its data.
+* **MRT pillars**: one every 30 m along the viaduct (OSM maps each track as its own way, so the pair
+  is merged into one pillar in the median). Elevated stations don't block the road under them.
+* **Flyovers**: the bus has an elevation level. It changes level only where roads of both levels
+  overlap (ramp junctions), so driving under a flyover never teleports you onto it; on a deck the
+  parapets keep you on the carriageway and buildings below are ignored. A light outline shows the
+  bus when it is under a deck, the viaduct or a station.
+* **Sound**: synthesised with WebAudio for now (diesel engine following rpm/throttle, four horn
+  styles including the melodic "pressure horn", brake squeal, door hiss, crash). Recorded samples
+  replace these in Phase 7.
+
 ## Performance
 
 Measured with an in-page benchmark (`__game.bench()`, GPU-synchronised) at 1280×800 on a
@@ -112,6 +157,12 @@ loaded lazily. First load is ~1.5 MB: app JS ~170 KB gz, `index.json` 44 KB, LOD
   Regenerate with `npm run data:build`.
 * **OSM bus route relations are sparse** in Dhaka (only a handful are tagged); Phase 5 will build
   routes from road ways + named stops (see `docs/ROUTES.md`).
+* **Elevated buildings**: `layer=1` on buildings is common in Dhaka OSM and is ignored; a building is
+  treated as elevated (rendered, not an obstacle) with `min_level`/`building:min_level` ≥ 1,
+  `min_height` ≥ 2.5 m, `layer` ≥ 3, or `layer` ≥ 2 on a station/transport building (51 in the city,
+  mostly MRT stations).
+* **Medians** of dual carriageways are not modelled as obstacles yet: OSM maps them as the gap
+  between two one-way ways, and the gap is drivable. MRT pillars are.
 * Validation reference coordinates for Shapla Chattar and Mohakhali Bus Terminal were corrected to
   their published positions, which OSM matches within 76 m and 23 m respectively.
 

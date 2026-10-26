@@ -8,7 +8,7 @@ import { closeSync, mkdirSync, openSync, writeFileSync, writeSync } from 'node:f
 import { join } from 'node:path';
 import { readPbf, type Tags } from './lib/pbf';
 import { assembleRings } from './lib/rings';
-import { areaKind, buildingHeight, filterTags, isBuilding, lineClass, pointClass } from './lib/classify';
+import { areaKind, buildingHeight, filterTags, isBuilding, isElevatedBuilding, lineClass, pointClass } from './lib/classify';
 import { centroid, pointInRing, signedArea, type Flat } from './lib/geom';
 import { project, type BBox } from '../src/shared/geo';
 import { PointKind } from '../src/shared/kinds';
@@ -106,7 +106,9 @@ export function extract(bboxName: string, bbox: BBox, pbfPath = RAW_PBF): Extrac
   const tagged: Array<{ id: number; lat: number; lon: number; tags: Tags }> = [];
   const ways = new Map<number, StoredWay>();
   const rels: StoredRel[] = [];
-  const progress = (label: string) => (f: number) => process.stdout.write(`\r  ${label} ${(f * 100).toFixed(0)}%   `);
+  const progress = (label: string) => (f: number) => {
+    if (process.stdout.isTTY) process.stdout.write(`\r  ${label} ${(f * 100).toFixed(0)}%   `);
+  };
 
   // ---- pass 1
   readPbf(
@@ -244,7 +246,7 @@ export function extract(bboxName: string, bbox: BBox, pbfPath = RAW_PBF): Extrac
     if (closed && isBuilding(t)) {
       const ring = ringXY(w.refs.slice(0, -1));
       if (ring.length < 6) continue;
-      emit({ t: 'b', id, h: Math.round(buildingHeight(t, id)), rings: [ring], name: t.name }, 'building');
+      emit({ t: 'b', id, h: Math.round(buildingHeight(t, id)), el: isElevatedBuilding(t) ? 1 : undefined, rings: [ring], name: t.name }, 'building');
       if (t.name && (t.amenity || t.tourism || t.historic || t.shop || t.railway || t.public_transport)) emitAreaPoint(t, ring, id);
       continue;
     }
@@ -316,7 +318,7 @@ export function extract(bboxName: string, bbox: BBox, pbfPath = RAW_PBF): Extrac
     const building = isBuilding(t);
     const ak = building ? null : areaKind(t);
     for (const g of groups) {
-      if (building) emit({ t: 'b', id: r.id, h: Math.round(buildingHeight(t, r.id)), rings: [g.o, ...g.holes], name: t.name }, 'building');
+      if (building) emit({ t: 'b', id: r.id, h: Math.round(buildingHeight(t, r.id)), el: isElevatedBuilding(t) ? 1 : undefined, rings: [g.o, ...g.holes], name: t.name }, 'building');
       else if (ak !== null) emit({ t: 'a', id: r.id, k: ak, rings: [g.o, ...g.holes], ...names(t) }, `area:${ak}`);
     }
     if (groups.length) emitAreaPoint(t, groups.sort((a, b) => Math.abs(signedArea(b.o)) - Math.abs(signedArea(a.o)))[0].o, r.id);

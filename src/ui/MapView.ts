@@ -10,7 +10,9 @@ import { PointKind } from '../shared/kinds';
 import { BACKGROUND } from '../render/palette';
 
 const MAP_LAYERS: LayerName[] = ['ground', 'upper'];
-const MINI_RADIUS = 92;
+const COARSE = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
+/** smaller minimap, top-right, on phones (bottom-right is taken by the pedals) */
+const MINI_RADIUS = COARSE ? 58 : 92;
 const MINI_ZOOM = 0.03; // px per metre
 
 interface Place {
@@ -248,7 +250,8 @@ export class MapView {
     }
     // minimap in the bottom-right corner
     const r = MINI_RADIUS;
-    this.mini.position.set(W - r - 16, H - r - 28);
+    if (COARSE) this.mini.position.set(W - r - 12, 104 + r);
+    else this.mini.position.set(W - r - 16, H - r - 28);
     this.mapWorld.pivot.set(this.cam.x, this.cam.y);
     this.mapWorld.position.set(0, 0);
     this.mapWorld.scale.set(MINI_ZOOM);

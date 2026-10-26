@@ -14,6 +14,8 @@
 
 export const CHUNK_MAGIC = 0x31434244; // "DBC1" little-endian
 export const COORD_SCALE = 10; // decimetres
+/** building flag: stands above street level (no ground collision) */
+export const BF_ELEVATED = 1;
 
 /** Line meta record layout (Int32 stride). */
 export const L_KIND = 0;
@@ -78,6 +80,8 @@ export interface ChunkData {
     ring: Uint32Array;
     /** per building height in metres (clamped to 255) */
     height: Uint8Array;
+    /** per building flags: BF_ELEVATED */
+    flags: Uint8Array;
   };
   lines: {
     pos: Int16Array;
@@ -117,6 +121,7 @@ export function encodeChunk(c: ChunkData): Uint8Array {
     'bld.idx': c.buildings.idx,
     'bld.ring': c.buildings.ring,
     'bld.height': c.buildings.height,
+    'bld.flags': c.buildings.flags,
     'line.pos': c.lines.pos,
     'line.meta': c.lines.meta,
     'line.wayId': c.lines.wayId,
@@ -179,6 +184,7 @@ export function decodeChunk(buf: ArrayBuffer): ChunkData {
       idx: get('bld.idx', 'u32'),
       ring: get('bld.ring', 'u32'),
       height: get('bld.height', 'u8'),
+      flags: get('bld.flags', 'u8'),
     },
     lines: { pos: get('line.pos', 'i16'), meta: get('line.meta', 'i32'), wayId: get('line.wayId', 'f64') },
   };
