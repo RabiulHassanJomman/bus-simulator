@@ -4,7 +4,7 @@ export class DebugOverlay {
   private frames = 0;
   private last = performance.now();
   fps = 0;
-  visible = true;
+  visible = !matchMedia("(pointer: coarse)").matches;
 
   constructor() {
     this.el.hidden = !this.visible;

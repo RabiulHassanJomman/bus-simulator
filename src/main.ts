@@ -50,23 +50,34 @@ async function boot() {
 
   // ---- input: drag to pan, wheel to zoom, keyboard pan/zoom/rotate
   const canvas = app.canvas;
-  let drag: { x: number; y: number } | null = null;
+  // one pointer pans; two pointers (touch) pinch-zoom and pan around their midpoint
+  const pointers = new Map<number, { x: number; y: number }>();
   let mouse = { x: 0, y: 0 };
+  const gesture = () => {
+    const p = [...pointers.values()];
+    if (p.length === 1) return { x: p[0].x, y: p[0].y, d: 0 };
+    return { x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2, d: Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) };
+  };
   canvas.addEventListener('pointerdown', (e) => {
     if (map.isOpen) return;
-    drag = { x: e.clientX, y: e.clientY };
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove', (e) => {
     mouse = { x: e.clientX, y: e.clientY };
-    if (!drag || map.isOpen) return;
-    const [ax, ay] = cam.screenToWorld(drag.x, drag.y);
-    const [bx, by] = cam.screenToWorld(e.clientX, e.clientY);
+    if (!pointers.has(e.pointerId) || map.isOpen) return;
+    const before = gesture();
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const after = gesture();
+    if (before.d > 0 && after.d > 0) cam.zoomAt(before.x, before.y, after.d / before.d);
+    const [ax, ay] = cam.screenToWorld(before.x, before.y);
+    const [bx, by] = cam.screenToWorld(after.x, after.y);
     cam.x += ax - bx;
     cam.y += ay - by;
-    drag = { x: e.clientX, y: e.clientY };
   });
-  canvas.addEventListener('pointerup', () => (drag = null));
+  const release = (e: PointerEvent) => pointers.delete(e.pointerId);
+  canvas.addEventListener('pointerup', release);
+  canvas.addEventListener('pointercancel', release);
   canvas.addEventListener(
     'wheel',
     (e) => {
@@ -77,15 +88,26 @@ async function boot() {
     { passive: false },
   );
   const keys = new Set<string>();
+  const toggleLang = () => {
+    labels.lang = map.lang = settings.lang = labels.lang === 'en' ? 'bn' : 'en';
+    saveSettings(settings);
+  };
+  // on-screen buttons for touch devices (no keyboard)
+  const buttons = document.createElement('div');
+  buttons.id = 'touch-buttons';
+  buttons.innerHTML = '<button data-a="map">🗺 Map</button><button data-a="lang">বাং / EN</button>';
+  buttons.addEventListener('click', (e) => {
+    const a = (e.target as HTMLElement).closest('button')?.dataset.a;
+    if (a === 'map') map.toggle();
+    if (a === 'lang') toggleLang();
+  });
+  document.body.appendChild(buttons);
   window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     keys.add(k);
     if (k === 'm') map.toggle();
     if (k === 'escape' && map.isOpen) map.toggle(false);
-    if (k === 'b') {
-      labels.lang = map.lang = settings.lang = labels.lang === 'en' ? 'bn' : 'en';
-      saveSettings(settings);
-    }
+    if (k === 'b') toggleLang();
     if (k === 'n') labels.enabled = !labels.enabled;
   });
   window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));

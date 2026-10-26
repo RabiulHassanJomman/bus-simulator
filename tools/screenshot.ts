@@ -18,7 +18,9 @@ async function main() {
       .concat('--window-size=1280,800'),
   });
   const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 800 });
+  // MOBILE=1 emulates a phone (390x844, touch, DPR 2)
+  if (process.env.MOBILE) await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  else await page.setViewport({ width: 1280, height: 800 });
   const errors: string[] = [];
   page.on('console', (m) => {
     if (m.type() === 'error' || m.type() === 'warn') errors.push(`${m.type()}: ${m.text()}`);
