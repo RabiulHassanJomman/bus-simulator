@@ -1,5 +1,7 @@
 # Dhaka Bus Simulator
 
+> **New session?** Read [docs/HANDOFF.md](docs/HANDOFF.md) first: full spec, status, issues and the plan for the remaining phases.
+
 A browser-based 2D top-down bus driving game set on the **real map of Dhaka**, generated from
 OpenStreetMap data at build time. TypeScript + Vite + PixiJS v8 (WebGL), deployable as a static site.
 
