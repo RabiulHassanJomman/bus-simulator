@@ -15,6 +15,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #d8d1c1; fon
 #loading.done { opacity: 0; pointer-events: none; }
 #loading .title { font-size: 34px; font-weight: 700; letter-spacing: 0.02em; }
 #loading .sub { margin-top: 10px; color: var(--ui-dim); }
+#loading .sub.error { max-width: min(520px, calc(100vw - 32px)); text-align: center; line-height: 1.5; color: var(--ui-fg); }
+#loading .sub.error p { margin: 0 0 10px; }
 #debug {
   position: fixed; left: 16px; bottom: 90px; padding: 8px 10px; background: var(--ui-bg); color: var(--ui-fg);
   font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; border-radius: 6px; white-space: pre; pointer-events: none;
@@ -129,6 +131,22 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #d8d1c1; fon
   width: 48px; height: 48px; border-radius: 50%; border: none; background: var(--ui-bg); color: #fff; font-size: 20px; touch-action: none;
 }
 #touch-drive .small-buttons button.down { background: rgba(233, 185, 52, 0.6); }
+#touch-drive .steer-buttons { position: absolute; left: 16px; bottom: 22px; display: none; gap: 14px; pointer-events: auto; }
+#touch-drive .steer-btn {
+  width: 92px; height: 110px; border-radius: 14px; border: none; background: rgba(30, 32, 38, 0.8); color: #fff;
+  font-size: 34px; touch-action: none;
+}
+#touch-drive .steer-btn.down { background: rgba(233, 185, 52, 0.75); transform: scale(0.96); }
+#touch-drive[data-steer='buttons'] .wheel { display: none; }
+#touch-drive[data-steer='buttons'] .steer-buttons { display: flex; }
+/* tilt: the wheel only shows the steering (tap it to re-centre) */
+#touch-drive[data-steer='tilt'] .wheel { width: 104px; height: 104px; opacity: 0.75; }
+#touch-drive[data-steer='tilt'] .wheel-inner { border-width: 10px; }
+#touch-drive .tilt-hint {
+  position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%); padding: 6px 12px; border-radius: 6px;
+  background: var(--ui-bg); color: #fff; font-size: 13px; white-space: nowrap; opacity: 0; transition: opacity 0.3s;
+}
+#touch-drive .tilt-hint.show { opacity: 1; }
 @media (pointer: coarse) {
   #touch-buttons { top: 10px; bottom: auto; left: 10px; }
   #touch-buttons button { padding: 8px 10px; min-height: 40px; font-size: 13px; }
@@ -242,4 +260,69 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #d8d1c1; fon
   .hud-speedo { left: auto; right: 10px; top: 236px; transform: scale(0.68); transform-origin: top right; }
   .hud-toasts { top: auto; bottom: 330px; max-width: 70vw; font-size: 12px; }
   #route-arrow { top: auto; bottom: 300px; }
+}
+
+/* ---- phones in landscape: short screen, controls in the corners, info along the top edge */
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 520px) {
+  #touch-buttons { top: 8px; left: 8px; gap: 6px; }
+  #touch-buttons button { min-height: 34px; padding: 6px 9px; font-size: 12px; border-radius: 8px; }
+  .hud-clock { top: 50px; bottom: auto; left: 8px; padding: 3px 8px; }
+  .hud-clock .time { font-size: 12px; }
+  .hud-clock .day { display: none; }
+  .hud-road { top: 8px; max-width: 30vw; font-size: 12px; padding: 4px 12px; }
+  .hud-stats { font-size: 11px; padding: 4px 8px; gap: 2px; }
+  .hud-stats .bar { width: 36px; }
+  .hud-speedo { top: auto; bottom: 8px; left: auto; right: 160px; transform: scale(0.6); transform-origin: bottom right; }
+  .hud-toasts { font-size: 12px; }
+  .hud-wrongway { top: 50px; padding: 4px 12px; font-size: 13px; }
+
+  /* stats tucked under the minimap so the top bar has room for the route strip */
+  .hud-stats { top: 102px; right: 8px; }
+  .hud-toasts { top: 46px; bottom: auto; }
+
+  /* route panel: a single line in the top bar (instead of the road name), nothing mid-screen */
+  body.in-run .hud-road { display: none; }
+  #run-hud {
+    top: 8px; left: 184px; right: 108px; width: auto; display: flex; align-items: center; gap: 10px;
+    padding: 5px 12px 6px; border-radius: 18px; overflow: hidden;
+  }
+  .rh-route { display: none; }
+  .rh-next { display: flex; align-items: baseline; gap: 6px; flex: 1 1 auto; min-width: 0; }
+  .rh-next small { display: none; }
+  .rh-next .stop { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .rh-next .dist { font-size: 11px; white-space: nowrap; }
+  .rh-grid { display: flex; gap: 10px; flex: none; align-items: center; }
+  .rh-grid > div { display: flex; align-items: center; gap: 3px; }
+  .rh-grid small { display: none; }
+  .rh-grid b { font-size: 12px; white-space: nowrap; }
+  .rh-grid > div:nth-child(1)::before { content: '🧍'; font-size: 11px; }
+  .rh-grid > div:nth-child(3)::before { content: '⏱'; font-size: 11px; }
+  .rh-grid > div:nth-child(4)::before { content: '🙂'; font-size: 11px; }
+  .rh-grid .sat { width: 36px; margin: 0; }
+  .rh-progress { position: absolute; left: 14px; right: 14px; bottom: 2px; height: 2px; }
+  .rh-prompt {
+    position: fixed; left: 50%; bottom: 56px; transform: translateX(-50%); white-space: nowrap;
+    padding: 4px 12px; font-size: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  }
+  #route-arrow { top: 56px; bottom: auto; }
+  #route-arrow span { font-size: 34px; }
+  #run-stops { top: 50px; max-height: calc(100vh - 70px); }
+
+  #touch-drive .wheel { left: 10px; bottom: 10px; width: 124px; height: 124px; }
+  #touch-drive .wheel-inner { border-width: 12px; }
+  #touch-drive[data-steer='tilt'] .wheel { width: 88px; height: 88px; }
+  #touch-drive .steer-buttons { left: 10px; bottom: 10px; gap: 8px; }
+  #touch-drive .steer-btn { width: 72px; height: 96px; font-size: 28px; }
+  #touch-drive .pedals { right: 10px; bottom: 10px; gap: 8px; }
+  #touch-drive .pedal { width: 64px; height: 100px; font-size: 12px; }
+  #touch-drive .pedal.brake { height: 80px; }
+  /* right of the steering, clear of the speedometer even on 640px-wide screens */
+  #touch-drive .small-buttons { left: 172px; bottom: 8px; gap: 6px; }
+  #touch-drive .small-buttons button { width: 38px; height: 38px; font-size: 16px; }
+  #attribution { top: 84px; left: 8px; right: auto; bottom: auto; font-size: 9px; }
+  #touch-drive .tilt-hint { bottom: 58px; }
+}
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 520px) and (max-width: 720px) {
+  .rh-grid > div:nth-child(4) { display: none; }
+  .rh-next .dist { display: none; }
 }

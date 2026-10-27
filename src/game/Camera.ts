@@ -33,6 +33,14 @@ export class Camera {
     return [this.x + dx * c - dy * s, this.y + dx * s + dy * c];
   }
 
+  worldToScreen(wx: number, wy: number): [number, number] {
+    const dx = (wx - this.x) * this.zoom;
+    const dy = (wy - this.y) * this.zoom;
+    const c = Math.cos(-this.rotation);
+    const s = Math.sin(-this.rotation);
+    return [this.width / 2 + dx * c - dy * s, this.height / 2 + dx * s + dy * c];
+  }
+
   /** Axis-aligned world rect covering the (possibly rotated) screen. */
   view(pad = 0): Rect {
     const hw = this.width / 2 / this.zoom;

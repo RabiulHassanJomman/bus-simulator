@@ -5,6 +5,7 @@ import { Container, Text, type TextStyleOptions } from 'pixi.js';
 import type { ChunkEntry } from '../world/World';
 import type { Camera } from '../game/Camera';
 import { PointKind, RoadClass, LF_BRIDGE } from '../shared/kinds';
+import { roadCasing, roadWidth } from '../shared/style';
 
 export type Lang = 'en' | 'bn';
 
@@ -31,6 +32,7 @@ interface Candidate {
   y: number;
   angle: number; // world radians, NaN = horizontal
   segLen: number; // metres of straight road available (road labels)
+  halfWidth: number; // metres from road centreline to its outer edge (labels sit beside it)
   minZoom: number;
   maxZoom: number;
 }
@@ -92,6 +94,7 @@ export class Labels {
         y: oy + by,
         angle: ba,
         segLen: bestLen,
+        halfWidth: roadWidth(l.cls, 0, l.flags) / 2 + roadCasing(l.cls),
         minZoom: e.lod === 0 ? (major ? 0.45 : 1.1) : 0.12,
         maxZoom: 99,
       });
@@ -103,15 +106,15 @@ export class Labels {
       if (p.kind === PointKind.Place) {
         const r = PLACE_RANK[p.sub] ?? 6;
         out.push({
-          en: p.name, bn: p.nameBn, style: r <= 2 ? 'placeMajor' : 'place', prio: 100 - r * 10, x, y, angle: NaN, segLen: 0,
+          en: p.name, bn: p.nameBn, style: r <= 2 ? 'placeMajor' : 'place', prio: 100 - r * 10, x, y, angle: NaN, segLen: 0, halfWidth: 0,
           minZoom: [0, 0, 0.03, 0.08, 0.2, 0.45, 0.9, 2][r] ?? 1, maxZoom: r <= 3 ? 1.2 : 4,
         });
       } else if (p.kind === PointKind.Station) {
-        out.push({ en: p.name, bn: p.nameBn, style: 'station', prio: 70, x, y, angle: NaN, segLen: 0, minZoom: e.lod === 0 ? 0.42 : 0.15, maxZoom: 99 });
+        out.push({ en: p.name, bn: p.nameBn, style: 'station', prio: 70, x, y, angle: NaN, segLen: 0, halfWidth: 0, minZoom: e.lod === 0 ? 0.42 : 0.15, maxZoom: 99 });
       } else if (p.kind === PointKind.Landmark) {
-        out.push({ en: p.name, bn: p.nameBn, style: 'landmark', prio: 55, x, y, angle: NaN, segLen: 0, minZoom: e.lod === 0 ? 0.6 : 0.25, maxZoom: 99 });
+        out.push({ en: p.name, bn: p.nameBn, style: 'landmark', prio: 55, x, y, angle: NaN, segLen: 0, halfWidth: 0, minZoom: e.lod === 0 ? 0.6 : 0.25, maxZoom: 99 });
       } else if (p.kind === PointKind.Poi && e.lod === 0 && p.sub === 'area') {
-        out.push({ en: p.name, bn: p.nameBn, style: 'landmark', prio: 20, x, y, angle: NaN, segLen: 0, minZoom: 1.4, maxZoom: 99 });
+        out.push({ en: p.name, bn: p.nameBn, style: 'landmark', prio: 20, x, y, angle: NaN, segLen: 0, halfWidth: 0, minZoom: 1.4, maxZoom: 99 });
       }
     }
     this.byChunk.set(e.key, out);
@@ -159,8 +162,8 @@ export class Labels {
       if (!s) continue;
       const dx = (c.x - cam.x) * z;
       const dy = (c.y - cam.y) * z;
-      const sx = hw + dx * cos - dy * sin;
-      const sy = hh + dx * sin + dy * cos;
+      let sx = hw + dx * cos - dy * sin;
+      let sy = hh + dx * sin + dy * cos;
       if (sx < -100 || sy < -40 || sx > cam.width + 100 || sy > cam.height + 40) continue;
       // same text nearby already shown (roads span many chunk pieces)
       const prev = placedText.get(s);
@@ -175,6 +178,10 @@ export class Labels {
         // keep text upright
         while (rot > Math.PI / 2) rot -= Math.PI;
         while (rot < -Math.PI / 2) rot += Math.PI;
+        // beside the road (on its upper side on screen) rather than painted over the lanes
+        const off = c.halfWidth * z + h / 2 + 1;
+        sx += Math.sin(rot) * off;
+        sy -= Math.cos(rot) * off;
       }
       const ac = Math.abs(Math.cos(rot));
       const as = Math.abs(Math.sin(rot));

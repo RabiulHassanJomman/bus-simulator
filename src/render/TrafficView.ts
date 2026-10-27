@@ -3,12 +3,15 @@ import { Container, Graphics, Sprite } from 'pixi.js';
 import type { Traffic, Vehicle } from '../game/traffic/Traffic';
 import type { Pedestrians, Ped } from '../game/traffic/Pedestrians';
 import type { Signals, Controller } from '../game/traffic/Signals';
-import type { TrafficAtlas } from './TrafficArt';
+import { ART_SCALE, type TrafficAtlas } from './TrafficArt';
 import type { World } from '../world/World';
 import type { Rect } from '../game/Camera';
 import { canTraverse } from '../game/Router';
 
 const HEIGHT: Record<string, number> = { bus: 3.2, truck: 3.0, leguna: 2.0, ambulance: 2.4, pickup: 1.7, police: 1.7, car: 1.5, taxi: 1.5, cng: 1.7, rickshaw: 1.8, motorcycle: 1.3 };
+
+/** minimum on-screen length (CSS px) of a vehicle sprite */
+const MIN_PX = 13;
 
 interface VSprites {
   body: Sprite;
@@ -45,14 +48,14 @@ export class TrafficView {
     let s = this.vs.get(v.id);
     if (s) return s;
     const tex = this.atlas.vehicle(v.spec.type, v.variant);
-    const body = new Sprite({ texture: tex, anchor: 0.5 });
-    const shadow = new Sprite({ texture: tex, anchor: 0.5, tint: 0x000000 });
+    const body = new Sprite({ texture: tex });
+    const shadow = new Sprite({ texture: tex, tint: 0x000000 });
     s = { body, shadow };
     this.vs.set(v.id, s);
     return s;
   }
 
-  sync(traffic: Traffic, peds: Pedestrians, signals: Signals, view: Rect) {
+  sync(traffic: Traffic, peds: Pedestrians, signals: Signals, view: Rect, zoom = 4.5) {
     const seen = new Set<number>();
     for (const v of traffic.vehicles) {
       seen.add(v.id);
@@ -68,6 +71,10 @@ export class TrafficView {
       if (!vis) continue;
       s.body.position.set(v.x, v.y);
       s.body.rotation = v.heading;
+      // small vehicles (bikes, rickshaws) never shrink below a visible size when zoomed out
+      const k = Math.min(2, Math.max(1, MIN_PX / (v.spec.length * zoom)));
+      s.body.scale.set(k * ART_SCALE);
+      s.shadow.scale.set(k * ART_SCALE);
       const h = (HEIGHT[v.spec.type] ?? 1.5) + (elevated ? v.level * 4.5 : 0);
       s.shadow.position.set(v.x + this.sunX * h, v.y + this.sunY * h);
       s.shadow.rotation = v.heading;
@@ -84,7 +91,7 @@ export class TrafficView {
       pseen.add(p.id);
       let sp = this.ps.get(p.id);
       if (!sp) {
-        sp = new Sprite({ texture: this.atlas.ped(p.kind, p.variant), anchor: 0.5 });
+        sp = new Sprite({ texture: this.atlas.ped(p.kind, p.variant), scale: ART_SCALE });
         this.ps.set(p.id, sp);
         this.pedLayer.addChild(sp);
       }
@@ -107,13 +114,13 @@ export class TrafficView {
     if (p.mode === 'down') {
       sp.rotation = p.heading + Math.PI / 2;
       sp.alpha = Math.min(1, p.timer / 2);
-      sp.scale.set(1.15, 1.15);
+      sp.scale.set(1.15 * ART_SCALE);
       return;
     }
     sp.alpha = 1;
     sp.rotation = p.heading;
     const bob = p.mode === 'idle' ? 0 : Math.sin(p.anim * 2) * 0.06;
-    sp.scale.set(1 + bob, 1 - bob * 0.5);
+    sp.scale.set((1 + bob) * ART_SCALE, (1 - bob * 0.5) * ART_SCALE);
   }
 
   private syncSignals(traffic: Traffic, signals: Signals, view: Rect) {

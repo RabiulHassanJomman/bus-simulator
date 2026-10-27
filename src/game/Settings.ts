@@ -18,9 +18,14 @@ export const PRESETS: Record<Quality, QualityPreset> = {
 
 const KEY = 'dbs.settings.v1';
 
+/** Touch steering: on-screen wheel, left/right buttons, or phone tilt (accelerometer). */
+export type SteerMode = 'wheel' | 'buttons' | 'tilt';
+const STEER_MODES: SteerMode[] = ['wheel', 'buttons', 'tilt'];
+
 export interface Settings {
   quality: Quality;
   lang: 'en' | 'bn';
+  steer: SteerMode;
 }
 
 export function loadSettings(): Settings {
@@ -32,7 +37,8 @@ export function loadSettings(): Settings {
   }
   const q = new URLSearchParams(location.search).get('quality');
   const quality = (q && q in PRESETS ? q : s.quality && s.quality in PRESETS ? s.quality : 'med') as Quality;
-  return { quality, lang: s.lang === 'bn' ? 'bn' : 'en' };
+  const steer = STEER_MODES.includes(s.steer as SteerMode) ? (s.steer as SteerMode) : 'wheel';
+  return { quality, lang: s.lang === 'bn' ? 'bn' : 'en', steer };
 }
 
 export function saveSettings(s: Settings) {

@@ -27,8 +27,15 @@ export interface Vehicle {
   heading: number;
   level: number;
   stuck: number;
-  /** seconds of deliberate stop (buses picking up in the middle of the road) */
+  /** seconds of deliberate stop (buses picking up at the kerb) */
   dwell: number;
+  /** a bus heading for the kerb to stop there for this many seconds */
+  pullOver: number;
+  /** id of what held us up last frame (-1 = free): breaks mutual waits at junctions */
+  blocker: number;
+  /** gridlock breaker: ignore this vehicle id (it is part of a wait cycle with us) for `forceT` s */
+  ignore: number;
+  forceT: number;
   /** controller already cleared (don't stop again inside the same junction) */
   clearedCtrl: number;
   honk: number; // seconds until it may honk again
@@ -69,7 +76,7 @@ export class Traffic {
   private edgeGrid = new Map<number, number[]>();
   time = 0;
   /** target vehicle count at density 1 */
-  baseCount = 200;
+  baseCount = 150;
   radius = 330;
   despawnRadius = 420;
   events: TrafficEvents = { honks: [] };
@@ -170,7 +177,7 @@ export class Traffic {
           if (cls < RoadClass.Residential || cls === RoadClass.Pedestrian) continue;
           // bigger roads carry more traffic
           // main roads carry most of the traffic (and the jams)
-          const w = (cls >= RoadClass.Primary ? 12 : cls >= RoadClass.Secondary ? 6 : cls >= RoadClass.Tertiary ? 3 : 1) * g.edgeLen[e];
+          const w = (cls >= RoadClass.Primary ? 7 : cls >= RoadClass.Secondary ? 4.5 : cls >= RoadClass.Tertiary ? 2.5 : 1) * g.edgeLen[e];
           this.spawnEdges.push(e);
           this.spawnWeights.push(w);
         }
@@ -203,7 +210,9 @@ export class Traffic {
       const oneway = (g.edgeFlags[e] & LF_ONEWAY) !== 0;
       const dir: 1 | -1 = oneway || this.rand() < 0.5 ? 1 : -1;
       const L = this.edgeLength(e);
-      const s = this.rand() * L;
+      // not inside junctions: skip short connector edges and the ends of longer ones
+      if (L < 24) continue;
+      const s = 10 + this.rand() * (L - 20);
       const [x, y, tx, ty] = this.pointAt(e, dir, s);
       const d = Math.hypot(x - px, y - py);
       if (d < minDist || d > this.radius) continue;
@@ -235,6 +244,10 @@ export class Traffic {
         level: g.edgeLevel[e],
         stuck: 0,
         dwell: 0,
+        pullOver: 0,
+        blocker: -1,
+        ignore: -1,
+        forceT: 0,
         clearedCtrl: -1,
         honk: 2 + this.rand() * 6,
         shaken: 0,
@@ -325,7 +338,8 @@ export class Traffic {
     let alive = 0;
     for (const v of this.vehicles) {
       const d = Math.hypot(v.x - player.x, v.y - player.y);
-      if (d > this.despawnRadius || (v.stuck > 40 && d > 150)) v.dead = true;
+      // hopelessly stuck vehicles vanish once out of sight
+      if (d > this.despawnRadius || (v.stuck > 25 && d > viewRadius + 20)) v.dead = true;
       if (!v.dead) alive++;
     }
     this.vehicles = this.vehicles.filter((v) => !v.dead);
@@ -336,8 +350,35 @@ export class Traffic {
     for (let i = 0; i < (initial ? 40 : 4) && alive < target; i++) if (this.spawnOne(player.x, player.y, initial ? 30 : ring, truckShare)) alive++;
     this.rebuildGrid();
 
+    this.breakGridlocks();
     for (const v of this.vehicles) this.drive(v, dt, obstacles);
     void g;
+  }
+
+  /**
+   * Wait cycles (A waits for B, B for C, C for A — junction gridlock): the oldest vehicle in
+   * the cycle edges past whoever blocks it, as Dhaka drivers do, and the knot unties.
+   */
+  private breakGridlocks() {
+    const byId = new Map<number, Vehicle>();
+    for (const v of this.vehicles) byId.set(v.id, v);
+    const seen = new Set<number>();
+    for (const v of this.vehicles) {
+      if (v.blocker < 0 || v.stuck < 1.5 || seen.has(v.id)) continue;
+      const chain: Vehicle[] = [];
+      let c: Vehicle | undefined = v;
+      while (c && c.blocker >= 0 && chain.length < 16 && !chain.includes(c)) {
+        chain.push(c);
+        c = byId.get(c.blocker);
+      }
+      for (const m of chain) seen.add(m.id);
+      if (!c || !chain.includes(c)) continue;
+      const cycle = chain.slice(chain.indexOf(c));
+      if (cycle.some((m) => m.forceT > 0)) continue;
+      const first = cycle.reduce((a, b) => (b.id < a.id ? b : a));
+      first.ignore = first.blocker;
+      first.forceT = 3;
+    }
   }
 
   private drive(v: Vehicle, dt: number, obstacles: Obstacle[]) {
@@ -348,34 +389,65 @@ export class Traffic {
     const lx = fy; // left normal (y-down)
     const ly = -fx;
 
-    // --- leader search: nearest thing ahead in our lateral corridor
+    // --- leader search: nearest thing ahead in our lateral corridor, using the other
+    // body's real extents along/across our path (a bus crossing in front is 10 m wide).
+    // Also: how far we may move sideways before touching whoever is alongside.
     let gap = Infinity;
     let leadV = 0;
     let blockedSide = 0; // lateral position of the blocker (for weaving)
-    const consider = (ox: number, oy: number, olen: number, owid: number, ovx: number, ovy: number) => {
+    let blocker = -1;
+    let roomLeft = Infinity;
+    let roomRight = Infinity;
+    const consider = (id: number, ox: number, oy: number, olen: number, owid: number, oh: number, ovx: number, ovy: number) => {
       const rx = ox - v.x;
       const ry = oy - v.y;
       const ahead = rx * fx + ry * fy;
-      if (ahead <= 0 || ahead > LOOK) return;
       const side = rx * lx + ry * ly;
-      if (Math.abs(side) > (spec.width + owid) / 2 + 0.25) return;
-      const gp = ahead - (spec.length + olen) / 2;
+      const c = Math.abs(Math.cos(oh - v.heading));
+      const sn = Math.abs(Math.sin(oh - v.heading));
+      const extLong = (c * olen + sn * owid) / 2;
+      const extLat = (sn * olen + c * owid) / 2;
+      const clear = spec.width / 2 + extLat;
+      // alongside: limits sideways movement
+      if (Math.abs(ahead) < spec.length / 2 + extLong + 0.4) {
+        if (side > 0) roomLeft = Math.min(roomLeft, side - clear - 0.25);
+        else roomRight = Math.min(roomRight, -side - clear - 0.25);
+      }
+      if (ahead <= 0 || ahead > LOOK + extLong) return;
+      if (Math.abs(side) > clear + 0.3) return;
+      const gp = ahead - spec.length / 2 - extLong;
       if (gp < gap) {
         gap = gp;
         leadV = ovx * fx + ovy * fy;
         blockedSide = side;
+        blocker = id;
       }
     };
-    for (const o of this.query(v.x + fx * LOOK * 0.5, v.y + fy * LOOK * 0.5, LOOK * 0.6)) {
+    const near = this.query(v.x + fx * LOOK * 0.4, v.y + fy * LOOK * 0.4, LOOK * 0.75);
+    for (const o of near) {
       if (o === v || o.level !== v.level) continue;
-      // ignore vehicles crossing nearly head-on in the other half of the road
+      // untying a gridlock: creep through the knot, ignoring the vehicles in it
+      if (v.forceT > 0 && (o.id === v.ignore || o.v < 1.5)) continue;
       const hdot = Math.cos(o.heading - v.heading);
-      if (hdot < -0.7) continue;
-      consider(o.x, o.y, o.spec.length, o.spec.width, Math.cos(o.heading) * o.v, Math.sin(o.heading) * o.v);
+      // oncoming traffic keeps to its own half; only mind it when it is right beside us
+      if (hdot < -0.7 && Math.hypot(o.x - v.x, o.y - v.y) > (spec.length + o.spec.length) / 2 + 1) continue;
+      // mutual wait (typically two vehicles crossing a junction): the older one goes first
+      if (o.blocker === v.id && v.id < o.id && hdot < 0.8) continue;
+      if (hdot < -0.7) {
+        // beside an oncoming vehicle: only a sideways constraint
+        const rx = o.x - v.x;
+        const ry = o.y - v.y;
+        const side = rx * lx + ry * ly;
+        const clear = (spec.width + o.spec.width) / 2 + 0.25;
+        if (side > 0) roomLeft = Math.min(roomLeft, side - clear);
+        else roomRight = Math.min(roomRight, -side - clear);
+        continue;
+      }
+      consider(o.id, o.x, o.y, o.spec.length, o.spec.width, o.heading, Math.cos(o.heading) * o.v, Math.sin(o.heading) * o.v);
     }
     for (const o of obstacles) {
       if (Math.abs(o.x - v.x) > LOOK + 10 || Math.abs(o.y - v.y) > LOOK + 10) continue;
-      consider(o.x, o.y, o.hl * 2, o.hw * 2, o.vx, o.vy);
+      consider(-2, o.x, o.y, o.hl * 2, o.hw * 2, o.h, o.vx, o.vy);
     }
 
     // --- signals at the end of this edge
@@ -396,10 +468,32 @@ export class Traffic {
           if ((light === 'red' || (light === 'yellow' && canStop)) && stopAt > -1.5 && stopAt < gap) {
             gap = Math.max(0, stopAt);
             leadV = 0;
+            blocker = -1;
           }
         }
       }
     }
+
+    // --- don't block the box: wait before the junction until there is room beyond it
+    if (v.next >= 0 && toEnd < 14 && toEnd > 0.5 && v.forceT <= 0) {
+      const nd = (g.edgeA[v.next] === node ? 1 : -1) as 1 | -1;
+      const exitS = Math.min(this.edgeLength(v.next), spec.length / 2 + 4);
+      const [ex, ey, etx, ety] = this.pointAt(v.next, nd, exitS);
+      for (const o of this.query(ex, ey)) {
+        if (o === v || o.level !== v.level || o.v > 1.5) continue;
+        if (Math.cos(o.heading) * etx + Math.sin(o.heading) * ety < 0.5) continue; // not in our exit lane
+        if (Math.hypot(o.x - ex, o.y - ey) > o.spec.length / 2 + spec.length / 2 + 1) continue;
+        const stopAt = Math.max(0, toEnd - spec.length / 2 - 1.5);
+        if (stopAt < gap) {
+          gap = stopAt;
+          leadV = 0;
+          blocker = o.id;
+        }
+        break;
+      }
+    }
+    v.blocker = gap < 8 ? blocker : -1;
+    if (v.forceT > 0 && (v.forceT -= dt) <= 0) v.ignore = -1;
 
     // --- desired speed: road limit, curves, type
     let v0 = Math.min(v.vmax, (g.edgeSpeed[v.edge] / 3.6) * 1.1);
@@ -412,8 +506,9 @@ export class Traffic {
       v.dwell -= dt;
       v0 = 0;
     }
-    // buses stop to pick up passengers wherever they like
-    if (spec.type === 'bus' && v.dwell <= 0 && this.rand() < dt / 50) v.dwell = 6 + this.rand() * 14;
+    if (v.forceT > 0) v0 = Math.min(v0, 3);
+    // buses pull over to the kerb now and then to pick up passengers (not near junctions)
+    if (spec.type === 'bus' && v.dwell <= 0 && v.pullOver <= 0 && toEnd > 35 && v.s > 15 && this.rand() < dt / 80) v.pullOver = 5 + this.rand() * 8;
     // slow for the turn at the end of the edge
     if (v.next < 0 && toEnd < 30) v.next = this.chooseNext(v);
     if (v.next >= 0 && toEnd < 25) {
@@ -435,12 +530,24 @@ export class Traffic {
     v.v = Math.max(0, v.v + acc * dt);
     if (gap < 0.3 && v.v > 0) v.v = Math.min(v.v, Math.max(0, gap));
 
-    // --- weaving: squeeze past slow leaders (rickshaws, CNGs, bikes do this constantly)
+    // --- weaving: squeeze past slow leaders (rickshaws, CNGs, bikes do this constantly),
+    // but only into a gap that is actually free
     const [lo, hi] = this.latBand(v.edge, spec.width);
-    if (gap < 18 && leadV < v.v + 0.5 && this.rand() < spec.weave * dt * 3) {
-      // move to whichever side of the blocker has room in our band
-      const want = blockedSide > 0 ? v.lat - spec.width - 0.6 : v.lat + spec.width + 0.6;
-      v.latTarget = Math.max(lo, Math.min(hi, want));
+    if (v.pullOver > 0) {
+      v.latTarget = hi;
+      if (Math.abs(v.lat - hi) < 0.5 || toEnd < 25) {
+        v.dwell = v.pullOver;
+        v.pullOver = 0;
+      }
+    } else if (gap < 18 && leadV < v.v + 0.5 && v.dwell <= 0 && this.rand() < spec.weave * dt * 3) {
+      const need = spec.width + 0.6;
+      const leftOk = roomLeft > need * 0.8 && v.lat + need <= hi + 0.1;
+      const rightOk = roomRight > need * 0.8 && v.lat - need >= lo - 0.1;
+      // prefer passing on the side away from the blocker
+      const goLeft = blockedSide > 0 ? !rightOk && leftOk : leftOk;
+      const goRight = !goLeft && rightOk;
+      if (goLeft) v.latTarget = Math.min(hi, v.lat + need);
+      else if (goRight) v.latTarget = Math.max(lo, v.lat - need);
     } else if (this.rand() < dt * 0.15) {
       // drift back to the preferred position (kerb for rickshaws), with some randomness
       const pref = Math.min(1, Math.max(0, v.kerbPref + (this.rand() - 0.5) * spec.weave * 0.6));
@@ -448,7 +555,11 @@ export class Traffic {
     }
     v.latTarget = Math.max(lo, Math.min(hi, v.latTarget));
     const latRate = (spec.weave * 1.6 + 0.4) * dt * Math.min(1, v.v / 2 + 0.2);
-    v.lat += Math.max(-latRate, Math.min(latRate, v.latTarget - v.lat));
+    let dLat = Math.max(-latRate, Math.min(latRate, v.latTarget - v.lat));
+    // never slide into someone alongside (left = +lat)
+    if (dLat > 0) dLat = Math.min(dLat, Math.max(0, roomLeft));
+    else dLat = Math.max(dLat, -Math.max(0, roomRight));
+    v.lat += dLat;
 
     // --- honking: Dhaka drivers honk when held up
     v.honk -= dt;
@@ -515,6 +626,11 @@ export class Traffic {
   shove(v: Vehicle, nx: number, ny: number, amount: number) {
     v.x += nx * amount;
     v.y += ny * amount;
+    // move its lane position too, or it would glide straight back into the bus
+    const [, , tx, ty] = this.pointAt(v.edge, v.dir, v.s);
+    v.s = Math.max(0, v.s + (nx * tx + ny * ty) * amount);
+    v.lat += (nx * ty - ny * tx) * amount;
+    v.latTarget = v.lat;
     v.shaken = 3 + this.rand() * 3;
     v.v = 0;
     v.honk = 0;

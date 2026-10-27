@@ -1,4 +1,4 @@
-import { Application } from 'pixi.js';
+import { Application, isWebGLSupported } from 'pixi.js';
 import { Camera } from './game/Camera';
 import { World } from './world/World';
 import { DebugOverlay } from './ui/DebugOverlay';
@@ -36,13 +36,39 @@ import type { WorldIndex } from './shared/format';
 
 const PHYS_DT = 1 / 120;
 
+class StartupError extends Error {}
+
+/** Replace the loading screen text with a (bilingual) explanation. */
+function showStartupError(en: string, bn: string) {
+  const el = document.getElementById('loading-text')!;
+  el.innerHTML = '';
+  for (const t of [en, bn]) {
+    const p = document.createElement('p');
+    p.textContent = t;
+    el.appendChild(p);
+  }
+  el.classList.add('error');
+}
+
 async function boot() {
+  // the map is drawn with custom WebGL shaders: there is no canvas-only fallback
+  if (!isWebGLSupported()) {
+    showStartupError(
+      "Your browser or device doesn't support WebGL, which this game needs. Try turning on hardware acceleration in your browser settings, or use an up-to-date Chrome or Firefox.",
+      'আপনার ব্রাউজার বা ডিভাইস WebGL সমর্থন করে না, যা এই গেমের জন্য প্রয়োজন। ব্রাউজারের সেটিংসে হার্ডওয়্যার অ্যাক্সিলারেশন চালু করুন, অথবা Chrome বা Firefox-এর নতুন সংস্করণ ব্যবহার করুন।',
+    );
+    return;
+  }
   // labels need the Bangla/Latin web fonts before the first Text is rasterised
   await Promise.race([
     Promise.all([document.fonts.load("600 12px 'Noto Sans'"), document.fonts.load("600 12px 'Noto Sans Bengali'", 'ঢাকা')]),
     new Promise((r) => setTimeout(r, 3000)),
   ]).catch(() => {});
-  const index = (await (await fetch('data/index.json')).json()) as WorldIndex;
+  const index = (await fetch('data/index.json')
+    .then((r) => r.json())
+    .catch(() => {
+      throw new StartupError('map data missing');
+    })) as WorldIndex;
   const settings = loadSettings();
   const preset = PRESETS[settings.quality];
   const app = new Application();
@@ -145,7 +171,10 @@ async function boot() {
   hud.lang = settings.lang;
   const obstacles: Obstacle[] = [];
   const audio = new AudioEngine();
-  const input = new Input();
+  const input = new Input(settings.steer, (m) => {
+    settings.steer = m;
+    saveSettings(settings);
+  });
 
   // ---- the player's bus
   const bus = new Bus(BUSES.local);
@@ -287,11 +316,22 @@ async function boot() {
   const buttons = document.createElement('div');
   buttons.id = 'touch-buttons';
   buttons.innerHTML = '<button data-a="map">🗺 Map</button><button data-a="lang">বাং / EN</button>';
+  // phones: fullscreen hides the browser bars (most of a landscape screen's height)
+  if (matchMedia('(pointer: coarse)').matches && document.fullscreenEnabled)
+    buttons.insertAdjacentHTML('beforeend', '<button data-a="fullscreen" title="Fullscreen">⤢</button>');
   buttons.addEventListener('click', (e) => {
     audio.start();
     const a = (e.target as HTMLElement).closest('button')?.dataset.a;
     if (a === 'map') map.toggle();
     if (a === 'lang') toggleLang();
+    if (a === 'fullscreen') {
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      else
+        document.documentElement
+          .requestFullscreen({ navigationUI: 'hide' })
+          .then(() => (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.('landscape'))
+          .catch(() => {});
+    }
   });
   document.body.appendChild(buttons);
   const held = new Set<string>();
@@ -319,6 +359,8 @@ async function boot() {
   const debug = new DebugOverlay();
   const loadingEl = document.getElementById('loading')!;
   let firstLoad = true;
+  /** 0..1: how see-through overhead structures around the bus are */
+  let xray = 0;
   let acc = 0;
 
   app.ticker.add((t) => {
@@ -521,8 +563,25 @@ async function boot() {
     cam.width = app.screen.width;
     cam.height = app.screen.height;
     cam.apply(world.root);
+    // under/near a flyover or the metro viaduct: see through it around the bus. Probe around
+    // and ahead of the bus so traffic waiting under the deck shows up before we get there.
+    let near = false;
+    if (bus.level === 0 && world.lod === 0) {
+      const fx = Math.cos(p.heading);
+      const fy = Math.sin(p.heading);
+      for (const [f, s2] of [[0, 0], [18, 0], [34, 0], [-14, 0], [8, 12], [8, -12]]) {
+        if (collision.covered(p.cx + fx * f - fy * s2, p.cy + fy * f + fx * s2, 0)) {
+          near = true;
+          break;
+        }
+      }
+    }
+    xray += ((near ? 1 : 0) - xray) * (1 - Math.exp(-dt * 5));
+    if (xray < 0.01 && !near) xray = 0;
+    const [bsx, bsy] = cam.worldToScreen(p.cx, p.cy);
+    world.setXray(bsx, bsy, Math.max(110, 34 * cam.zoom), xray);
     world.update(cam.view(), cam.zoom, { x: p.cx, y: p.cy });
-    if (sim) sim.view.sync(sim.traffic, sim.peds, sim.signals, cam.view(10));
+    if (sim) sim.view.sync(sim.traffic, sim.peds, sim.signals, cam.view(10), cam.zoom);
     labels.update(cam);
     map.update();
     hud.update(bus);
@@ -586,5 +645,7 @@ async function boot() {
 
 boot().catch((e) => {
   console.error(e);
-  document.getElementById('loading-text')!.textContent = `Failed to start: ${e}. Did you run "npm run data:build"?`;
+  if (e instanceof StartupError) {
+    showStartupError(`Failed to load the map data. Did you run "npm run data:build"?`, 'মানচিত্রের ডেটা লোড করা যায়নি।');
+  } else showStartupError(`Failed to start: ${e}`, 'গেমটি চালু করা যায়নি। পেজটি আবার লোড করে দেখুন।');
 });

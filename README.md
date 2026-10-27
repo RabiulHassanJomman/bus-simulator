@@ -27,7 +27,7 @@ and would otherwise serve truncated chunks.
 | Action | Keyboard | Gamepad | Touch |
 |---|---|---|---|
 | Accelerate / brake (hold brake when stopped = reverse) | `W`/`S` or `↑`/`↓` | RT / LT | GAS / BRAKE pedals |
-| Steer | `A`/`D` or `←`/`→` | left stick | steering wheel |
+| Steer | `A`/`D` or `←`/`→` | left stick | wheel, ◀ ▶ buttons or phone tilt (🛞 / ⇆ / 📱 button switches; in tilt mode tap the wheel to re-centre) |
 | Handbrake | `Space` | A | — |
 | Horn (tap to spam, hold to blare; `Shift+H` changes horn) | `H` | B | 📯 |
 | Doors (left side) | `E` | X | 🚪 |
@@ -95,7 +95,8 @@ Geofabrik PBF ──► tools/extract.ts ──► data/work/<bbox>/features.ndj
   sun angles cost nothing. All shadows are composited in one `AlphaFilter` pass so overlaps
   don't double-darken.
 * Labels are screen-space `Text` (Noto Sans + Noto Sans Bengali), placed greedily by priority with
-  collision boxes: road names along their longest straight run (kept upright), flyovers highlighted,
+  collision boxes: road names beside the road along its longest straight run (kept upright, never over the
+  lanes), flyovers highlighted,
   places by rank and zoom, metro stations and landmarks.
 
 ## Driving model
@@ -117,7 +118,9 @@ Geofabrik PBF ──► tools/extract.ts ──► data/work/<bbox>/features.ndj
 * **Flyovers**: the bus has an elevation level. It changes level only where roads of both levels
   overlap (ramp junctions), so driving under a flyover never teleports you onto it; on a deck the
   parapets keep you on the carriageway and buildings below are ignored. A light outline shows the
-  bus when it is under a deck, the viaduct or a station.
+  bus when it is under a deck, the viaduct or a station, and while the bus is under or approaching
+  one, an x-ray filter on the upper layer fades overhead structures in a soft circle around it so
+  the traffic below stays visible.
 * **Sound**: synthesised with WebAudio for now (diesel engine following rpm/throttle, four horn
   styles including the melodic "pressure horn", brake squeal, door hiss, crash). Recorded samples
   replace these in Phase 7.

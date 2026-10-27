@@ -249,8 +249,12 @@ export class MapView {
       return;
     }
     // minimap in the bottom-right corner
-    const r = MINI_RADIUS;
-    if (COARSE) this.mini.position.set(W - r - 12, 104 + r);
+    // phones in landscape: smaller, in the top-right corner beside the stats
+    const squat = COARSE && W > H && H <= 520;
+    this.mini.scale.set(squat ? 0.75 : 1);
+    const r = MINI_RADIUS * this.mini.scale.x;
+    if (squat) this.mini.position.set(W - r - 10, 8 + r);
+    else if (COARSE) this.mini.position.set(W - r - 12, 104 + r);
     else this.mini.position.set(W - r - 16, H - r - 28);
     this.mapWorld.pivot.set(this.cam.x, this.cam.y);
     this.mapWorld.position.set(0, 0);

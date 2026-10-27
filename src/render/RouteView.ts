@@ -2,7 +2,7 @@
 // passengers, and the stop box marking where to halt at the next stop.
 import { Container, Graphics, Sprite } from 'pixi.js';
 import type { RouteRun } from '../game/career/RouteRun';
-import type { TrafficAtlas } from './TrafficArt';
+import { ART_SCALE, type TrafficAtlas } from './TrafficArt';
 import type { World } from '../world/World';
 import type { MapView } from '../ui/MapView';
 
@@ -118,7 +118,7 @@ export class RouteView {
         let sp = this.pax.get(p.id);
         if (!sp) {
           const kind = p.kind === 'elderly' ? 'man' : p.kind;
-          sp = new Sprite({ texture: this.atlas!.ped(kind, p.id), anchor: 0.5 });
+          sp = new Sprite({ texture: this.atlas!.ped(kind, p.id), scale: ART_SCALE });
           this.pax.set(p.id, sp);
           this.paxLayer.addChild(sp);
         }

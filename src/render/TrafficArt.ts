@@ -1,11 +1,13 @@
 // Procedural top-down art for traffic and pedestrians, baked once into textures so hundreds
 // of sprites batch into a few draw calls. Local frame: +x forward, +y right, units metres.
 // (Placeholder until the Phase 7 asset pass, drawn with shading rather than flat boxes.)
-import { Graphics, type Renderer, type Texture } from 'pixi.js';
+import { Container, Graphics, Rectangle, type Renderer, type Texture } from 'pixi.js';
 import type { VType } from '../game/traffic/types';
 import type { PedKind } from '../game/traffic/Pedestrians';
 
 const PX_PER_M = 20;
+/** sprite scale for atlas textures (baked at PX_PER_M pixels per metre) */
+export const ART_SCALE = 1 / PX_PER_M;
 
 function shade(c: number, f: number): number {
   const r = Math.min(255, Math.round(((c >> 16) & 255) * f));
@@ -123,14 +125,17 @@ function drawVehicle(type: VType, variant: number): Graphics {
       break;
     }
     case 'motorcycle': {
-      const helmet = [0xd32f2f, 0x212121, 0xfafafa, 0x1565c0, 0xf9a825][variant % 5];
-      g.roundRect(-1.0, -0.12, 2.0, 0.24, 0.1).fill(0x262626);
-      g.roundRect(0.55, -0.4, 0.08, 0.8, 0.03).fill(0x8a8a8a); // handlebar
-      g.roundRect(-0.6, -0.26, 0.9, 0.52, 0.2).fill(SHIRT[(variant + 2) % SHIRT.length]); // rider
-      g.circle(0.05, 0, 0.17).fill(helmet);
-      g.circle(0.1, -0.05, 0.05).fill({ color: 0xffffff, alpha: 0.5 });
-      if (variant % 3 === 0) g.roundRect(-0.85, -0.22, 0.4, 0.44, 0.15).fill(SAREE[variant % SAREE.length]); // pillion
-      g.circle(0.95, 0, 0.07).fill(0xfff3c4);
+      // small and fast, so drawn to stand out against dark asphalt: white rim, bright helmet/shirt
+      const helmet = [0xe53935, 0xfdd835, 0xfafafa, 0x1e88e5, 0xff7043][variant % 5];
+      const shirt = [0xfafafa, 0xffb300, 0x4fc3f7, 0xef5350, 0xaed581, 0xf48fb1][variant % 6];
+      const rim = { color: 0xffffff, width: 0.14, alpha: 0.9 };
+      g.roundRect(-1.0, -0.15, 2.0, 0.3, 0.12).fill(0x303030).stroke(rim);
+      g.roundRect(0.52, -0.42, 0.12, 0.84, 0.05).fill(0xb0b0b0).stroke(rim); // handlebar
+      if (variant % 3 === 0) g.roundRect(-0.88, -0.25, 0.42, 0.5, 0.18).fill(SAREE[variant % SAREE.length]).stroke(rim); // pillion
+      g.roundRect(-0.6, -0.29, 0.92, 0.58, 0.24).fill(shirt).stroke(rim); // rider
+      g.circle(0.07, 0, 0.2).fill(helmet).stroke({ color: 0x1a1a1a, width: 0.05 });
+      g.circle(0.12, -0.06, 0.06).fill({ color: 0xffffff, alpha: 0.6 });
+      g.circle(0.98, 0, 0.12).fill(0xfff3c4);
       break;
     }
     case 'leguna': {
@@ -231,10 +236,26 @@ const VARIANTS: Record<VType, number> = {
 export function buildAtlas(renderer: Renderer): TrafficAtlas {
   const vtex = new Map<string, Texture>();
   const ptex = new Map<string, Texture>();
+  // Bake in pixels, not metres: generateTexture truncates its frame to whole units, which
+  // in metres cut a 0.8 m-wide motorcycle down to a 5 cm sliver. The texture's default anchor
+  // is the art's origin, and mipmaps keep small sprites solid when zoomed out.
   const bake = (g: Graphics) => {
-    const t = renderer.generateTexture({ target: g, resolution: PX_PER_M, antialias: true });
-    t.source.scaleMode = 'linear';
-    g.destroy();
+    const b = g.getLocalBounds();
+    g.scale.set(PX_PER_M);
+    const wrap = new Container();
+    wrap.addChild(g);
+    const x = Math.floor(b.x * PX_PER_M) - 2;
+    const y = Math.floor(b.y * PX_PER_M) - 2;
+    const frame = new Rectangle(x, y, Math.ceil(b.maxX * PX_PER_M) + 2 - x, Math.ceil(b.maxY * PX_PER_M) + 2 - y);
+    const t = renderer.generateTexture({
+      target: wrap,
+      frame,
+      resolution: 1,
+      antialias: true,
+      defaultAnchor: { x: -frame.x / frame.width, y: -frame.y / frame.height },
+      textureSourceOptions: { autoGenerateMipmaps: true, scaleMode: 'linear' },
+    });
+    wrap.destroy({ children: true });
     return t;
   };
   for (const [type, n] of Object.entries(VARIANTS) as Array<[VType, number]>)

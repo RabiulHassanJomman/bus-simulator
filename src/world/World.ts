@@ -3,6 +3,7 @@ import { AlphaFilter, Container, Rectangle, type Geometry, type Mesh, type Shade
 import { LAYERS, SHADOW_LAYERS, type BuiltChunk, type LayerName } from './buildChunk';
 import { colorMesh, shadowMesh } from '../render/shaders';
 import { WorkerPool } from './WorkerPool';
+import { XrayFilter } from '../render/XrayFilter';
 import { chunkUrl, type WorldIndex } from '../shared/format';
 import type { Rect } from '../game/Camera';
 
@@ -40,6 +41,9 @@ export class World {
   readonly available: Set<string>[];
   lod = 0;
   shadows = true;
+  /** see-through hole in overhead structures (set by setXray) */
+  private xray = new XrayFilter();
+  private xrayOn = false;
   onChunkReady?: (c: ChunkEntry) => void;
   onChunkRemoved?: (c: ChunkEntry) => void;
   stats = { loaded: 0, visible: 0, vertices: 0, failed: 0 };
@@ -148,14 +152,28 @@ export class World {
     this.stats.visible = visible;
 
     const pad = 200 / Math.max(zoom, 0.05);
-    for (const c of this.shadowLayers) {
-      c.visible = this.shadows && this.lod === 0;
-      const fr = c.filterArea!;
+    const up = this.layers.upper;
+    for (const c of [...this.shadowLayers, up]) {
+      if (c !== up) c.visible = this.shadows && this.lod === 0;
+      const fr = (c.filterArea ??= new Rectangle());
       fr.x = view.x0 - pad;
       fr.y = view.y0 - pad;
       fr.width = view.x1 - view.x0 + pad * 2;
       fr.height = view.y1 - view.y0 + pad * 2;
     }
+  }
+
+  /**
+   * Fade overhead layers (flyovers, metro, buildings) inside a screen-space circle so the
+   * ground under them is visible. strength 0 disables the extra render pass.
+   */
+  setXray(x: number, y: number, radius: number, strength: number) {
+    const on = strength > 0.01;
+    if (on !== this.xrayOn) {
+      this.xrayOn = on;
+      this.layers.upper.filters = on ? [this.xray] : null;
+    }
+    if (on) this.xray.set(x, y, radius, radius * 0.45, 1 - 0.85 * strength);
   }
 
   private load(lod: number, cx: number, cy: number) {

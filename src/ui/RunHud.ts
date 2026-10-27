@@ -42,6 +42,8 @@ export class RunHud {
 
   show(on: boolean) {
     this.el.hidden = !on;
+    // lets the CSS rearrange the top bar while a route is running
+    document.body.classList.toggle('in-run', on);
     if (!on) {
       this.list.hidden = true;
       this.arrow.hidden = true;
