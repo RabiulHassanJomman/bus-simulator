@@ -23,6 +23,14 @@ import { buildAtlas } from './render/TrafficArt';
 import { TrafficView } from './render/TrafficView';
 import { Rules } from './game/Rules';
 import { obbCorners, satPolygons } from './game/CollisionWorld';
+import { RouteRun } from './game/career/RouteRun';
+import { applyRun, loadCareer } from './game/career/Career';
+import { Menu } from './ui/Menu';
+import { RunHud } from './ui/RunHud';
+import { RouteView } from './render/RouteView';
+import { Announcer } from './audio/Announcer';
+import type { RouteData } from './shared/routes';
+import type { TrafficAtlas } from './render/TrafficArt';
 import { project, unproject } from './shared/geo';
 import type { WorldIndex } from './shared/format';
 
@@ -80,6 +88,28 @@ async function boot() {
     view: TrafficView;
   }
   let sim: Sim | null = null;
+  let atlas: TrafficAtlas | null = null;
+  const routeView = new RouteView(world, map, null);
+  let routes: RouteData[] = [];
+  fetch('data/routes.json')
+    .then((r) => r.json())
+    .then((r: RouteData[]) => (routes = r))
+    .catch((e) => console.error('routes missing', e));
+  const career = loadCareer();
+  const announcer = new Announcer();
+  announcer.lang = settings.lang;
+  const runHud = new RunHud();
+  runHud.lang = settings.lang;
+  let mode: 'menu' | 'free' | 'run' = 'menu';
+  let run: RouteRun | null = null;
+  let paused = false;
+  let runFinesStart = 0;
+  let resultsTimer = -1;
+  let conductorStop = -1;
+  let prevSpeed = 0;
+  let prevHeading = 0;
+  let feltAccel = 0;
+  let feltLateral = 0;
   // Dhaka's notorious jam hotspots: denser traffic that builds and clears over time
   const HOTSPOTS = [
     [23.7577, 90.3897],
@@ -104,7 +134,9 @@ async function boot() {
       return Math.min(1.5, w * 1.2);
     };
     const peds = new Pedestrians(g, traffic);
-    const view = new TrafficView(world, buildAtlas(app.renderer));
+    atlas = buildAtlas(app.renderer);
+    routeView.setAtlas(atlas);
+    const view = new TrafficView(world, atlas);
     sim = { traffic, peds, signals, router: new Router(g), view };
     Object.assign((window as unknown as { __game: object }).__game, { sim });
   })().catch((e) => console.error('traffic disabled:', e));
@@ -124,7 +156,7 @@ async function boot() {
   const [lat, lon, z] = (location.hash.slice(1) || '23.7383,90.3958').split(',').map(Number);
   const [sx, sy] = project(lon, lat);
   bus.phys.placeCentre(sx, sy, -Math.PI / 2);
-  let pendingSnap: { x: number; y: number } | null = { x: sx, y: sy };
+  let pendingSnap: { x: number; y: number; h?: number } | null = { x: sx, y: sy };
   cam.x = sx;
   cam.y = sy;
   if (z) cam.zoom = z;
@@ -186,8 +218,70 @@ async function boot() {
     { passive: false },
   );
   const toggleLang = () => {
-    labels.lang = map.lang = hud.lang = settings.lang = labels.lang === 'en' ? 'bn' : 'en';
+    labels.lang = map.lang = hud.lang = runHud.lang = menu.lang = announcer.lang = settings.lang = labels.lang === 'en' ? 'bn' : 'en';
     saveSettings(settings);
+    // re-render an open menu in the new language
+    if (menu.open === 'start') menu.startScreen();
+    else if (menu.open === 'routes') menu.routePicker();
+  };
+
+  // ---- game modes: menu / free roam / route run
+  const endRun = () => {
+    run = null;
+    routeView.setRun(null);
+    runHud.show(false);
+  };
+  const menu = new Menu(career, () => routes, {
+    career: () => menu.routePicker(),
+    freeRoam: () => {
+      menu.close();
+      endRun();
+      mode = 'free';
+      paused = false;
+    },
+    startRoute: (route, dir) => {
+      menu.close();
+      paused = false;
+      mode = 'run';
+      run = new RouteRun(route, dir, clock.density());
+      routeView.setRun(run);
+      runHud.show(true);
+      // park just before the first stop, facing along the route; snap to the left lane on load
+      const [x, y, tx, ty] = run.pointAt(Math.max(0, run.stops[0].s - 30));
+      bus.phys.placeCentre(x, y, Math.atan2(ty, tx));
+      pendingSnap = { x, y, h: Math.atan2(ty, tx) };
+      cam.x = x;
+      cam.y = y;
+      follow = true;
+      bus.doorsOpen = false;
+      sprite.setDoors(false);
+      runFinesStart = bus.fines;
+      conductorStop = -1;
+      resultsTimer = -1;
+      const first = run.stops[0];
+      runHud.flash(settings.lang === 'bn' ? `${first.nameBn} স্টপে যাত্রী তুলুন — দরজা খুলুন` : `Pick up passengers at ${first.name} — open the doors`, 8);
+    },
+    resume: () => {
+      menu.close();
+      paused = false;
+    },
+    quitToMenu: () => {
+      endRun();
+      paused = false;
+      mode = 'menu';
+      menu.startScreen();
+    },
+  });
+  menu.lang = settings.lang;
+  const togglePause = () => {
+    if (mode === 'menu') return;
+    if (menu.open === 'pause') {
+      menu.close();
+      paused = false;
+    } else if (!menu.open) {
+      paused = true;
+      menu.pause(mode === 'run');
+    }
   };
   // on-screen buttons (also handy with a mouse)
   const buttons = document.createElement('div');
@@ -204,7 +298,15 @@ async function boot() {
   window.addEventListener('keydown', (e) => {
     audio.start();
     held.add(e.key);
-    if (e.key === 'Escape' && map.isOpen) map.toggle(false);
+    if (e.key === 'Escape') {
+      if (map.isOpen) map.toggle(false);
+      else togglePause();
+    }
+    if (e.key === 'p' || e.key === 'P') togglePause();
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      if (run) runHud.toggleList();
+    }
     // Shift+H cycles horn style (garage upgrade later)
     if (e.key === 'H') {
       audio.hornStyle = HORN_STYLES[(HORN_STYLES.indexOf(audio.hornStyle) + 1) % HORN_STYLES.length];
@@ -221,7 +323,7 @@ async function boot() {
 
   app.ticker.add((t) => {
     const dt = Math.min(0.1, t.deltaMS / 1000);
-    input.enabled = !map.isOpen;
+    input.enabled = !map.isOpen && !paused && !menu.open;
     input.update(dt);
     for (const a of input.actions()) {
       if (a === 'map') map.toggle();
@@ -251,9 +353,9 @@ async function boot() {
 
     // ---- physics at a fixed step (waits for the spawn road to load)
     if (pendingSnap && collision.has(pendingSnap.x, pendingSnap.y)) {
-      if (bus.snapToRoad(collision, pendingSnap.x, pendingSnap.y, 600)) pendingSnap = null;
+      if (bus.snapToRoad(collision, pendingSnap.x, pendingSnap.y, 600, pendingSnap.h)) pendingSnap = null;
     }
-    if (!pendingSnap) {
+    if (!pendingSnap && !paused) {
       acc += dt;
       while (acc >= PHYS_DT) {
         bus.step(PHYS_DT, input.controls, collision);
@@ -261,8 +363,9 @@ async function boot() {
       }
     }
     // ---- traffic, pedestrians, rules
-    clock.tick(dt);
-    if (sim && !pendingSnap) {
+    if (!paused) clock.tick(dt);
+    let frameImpact = 0;
+    if (sim && !pendingSnap && !paused) {
       const p0 = bus.phys;
       const density = clock.density() * preset.traffic;
       obstacles.length = 0;
@@ -289,7 +392,8 @@ async function boot() {
         }
         sim.traffic.shove(v, -c.nx, -c.ny, c.depth * (1 - busShare) + 0.05);
         const impact = -rel;
-        if (impact > 1 && sim.traffic.time - (hitCooldown.get(v.id) ?? -9) > 2) {
+        // only the bus driver's fault (and fine) if the bus was actually moving
+        if (impact > 1 && Math.abs(p0.speed) > 1 && sim.traffic.time - (hitCooldown.get(v.id) ?? -9) > 2) {
           hitCooldown.set(v.id, sim.traffic.time);
           const lf = -c.nx * p0.fx - c.ny * p0.fy;
           const lr = -c.nx * -p0.fy - c.ny * p0.fx;
@@ -317,6 +421,7 @@ async function boot() {
 
     for (const ev of bus.events) {
       if (ev.type === 'crash') {
+        frameImpact = Math.max(frameImpact, ev.impact!);
         audio.crash(ev.impact!);
         if (ev.local) sprite.addDent(ev.local[0], ev.local[1], ev.level ?? 0.5);
         const what = ev.what ? ` with a ${ev.what === 'cng' ? 'CNG' : ev.what}` : '';
@@ -324,6 +429,70 @@ async function boot() {
       } else if (ev.type === 'reset') hud.toast(`Back on the road — fine ৳${ev.fine}`, 'bad');
     }
     bus.events.length = 0;
+
+    // ---- the route run: passengers feel the bus's acceleration
+    {
+      const pp = bus.phys;
+      if (dt > 0 && !paused) {
+        let dh = pp.heading - prevHeading;
+        while (dh > Math.PI) dh -= 2 * Math.PI;
+        while (dh < -Math.PI) dh += 2 * Math.PI;
+        const k = 1 - Math.exp(-dt * 6);
+        feltAccel += ((pp.speed - prevSpeed) / dt - feltAccel) * k;
+        feltLateral += ((pp.speed * dh) / dt - feltLateral) * k;
+      }
+      prevSpeed = pp.speed;
+      prevHeading = pp.heading;
+    }
+    if (run && !paused && !pendingSnap) {
+      const pp = bus.phys;
+      run.update(dt, { x: pp.cx, y: pp.cy, speed: pp.speed, accel: feltAccel, lateral: feltLateral, doorsOpen: bus.doorsOpen, impact: frameImpact }, pp.spec.length / 2 - 1.6);
+      const bn = settings.lang === 'bn';
+      for (const ev of run.events) {
+        const st = ev.stop !== undefined ? run.stops[ev.stop] : null;
+        const nm = st ? (bn ? st.nameBn : st.name) : '';
+        if (ev.type === 'approach') {
+          announcer.nextStop(st!.name, st!.nameBn);
+          runHud.flash(bn ? `সামনে ${nm} — হলুদ বক্সে থামুন` : `${nm} ahead — stop in the yellow box`, 5);
+        } else if (ev.type === 'arrived') {
+          const acc = Math.round(run.accuracy);
+          runHud.flash(acc < 5 ? (bn ? `চমৎকার থামানো! (${acc} মি)` : `Perfect stop! (${acc} m)`) : bn ? `থেমেছেন — ${acc} মি দূরে` : `Stopped ${acc} m from the stop`, 3);
+        } else if (ev.type === 'doors-needed') {
+          const touch = matchMedia('(pointer: coarse)').matches;
+          runHud.flash(bn ? `দরজা খুলুন — ${touch ? '🚪 চাপুন' : 'E চাপুন'}` : `Open the doors — ${touch ? 'tap 🚪' : 'press E'}`, 0.3);
+        }
+        else if ((ev.type === 'board' || ev.type === 'alight') && conductorStop !== ev.stop) {
+          conductorStop = ev.stop!;
+          const onward = run.stops.slice(ev.stop! + 1).map((s2) => [s2.name, s2.nameBn] as [string, string]);
+          if (ev.stop === run.stops.length - 1) announcer.terminus(st!.name, st!.nameBn);
+          else announcer.conductor(st!.name, st!.nameBn, onward);
+        } else if (ev.type === 'full') runHud.flash(bn ? 'বাস ভর্তি!' : 'Bus is full!', 1);
+        else if (ev.type === 'skipped') hud.toast(bn ? `${ev.count} জন যাত্রীকে ফেলে গেলেন` : `Left ${ev.count} passengers behind`, 'bad');
+        else if (ev.type === 'missed') hud.toast(bn ? `${nm} স্টপ বাদ পড়ল!` : `Missed the ${nm} stop!`, 'bad');
+        else if (ev.type === 'late') hud.toast(bn ? 'দেরি হয়ে যাচ্ছে!' : 'Running late!', 'bad');
+        else if (ev.type === 'off-route') runHud.flash(bn ? 'আপনি রুটের বাইরে' : 'You left the route', 3);
+        else if (ev.type === 'finished') resultsTimer = 2.5;
+      }
+      if (resultsTimer > 0) {
+        resultsTimer -= dt;
+        if (resultsTimer <= 0) {
+          const res = run.result(bus.fines - runFinesStart);
+          const net = applyRun(career, run.route.id, res);
+          endRun();
+          mode = 'menu';
+          menu.results(res, net);
+        }
+      }
+    }
+    if (run) {
+      let bearing: number | null = null;
+      if (run.offRoute > 45) {
+        const [rx, ry] = run.pointAt(run.s);
+        bearing = Math.atan2(ry - bus.phys.cy, rx - bus.phys.cx);
+      }
+      runHud.update(run, { avgSpeed: Math.max(4, Math.abs(bus.phys.speed)), bearingToRoute: bearing, screenRot: cam.rotation });
+      routeView.update(performance.now() / 1000);
+    }
 
     // sprite on the ground or above the flyover deck
     const parent = bus.level > 0 ? world.entitiesElevated : world.entities;
@@ -363,6 +532,8 @@ async function boot() {
     if (firstLoad && world.stats.loaded > 0 && world.loading === 0 && !pendingSnap) {
       firstLoad = false;
       loadingEl.classList.add('done');
+      if (new URLSearchParams(location.search).has('free')) mode = 'free';
+      else menu.startScreen();
     }
     debug.tick(() => {
       const [blon, blat] = unproject(p.cx, p.cy);
@@ -408,7 +579,9 @@ async function boot() {
     }
     return { update: tm.update / frames, labels: tm.labels / frames, render: tm.render / frames };
   };
-  Object.assign(window, { __game: { app, world, cam, labels, map, bench, bus, input, collision, clock, sim } });
+  Object.assign(window, {
+    __game: { app, world, cam, labels, map, bench, bus, input, collision, clock, sim, menu, career, get run() { return run; }, get routes() { return routes; } },
+  });
 }
 
 boot().catch((e) => {

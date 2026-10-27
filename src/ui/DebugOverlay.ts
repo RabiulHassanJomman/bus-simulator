@@ -4,7 +4,7 @@ export class DebugOverlay {
   private frames = 0;
   private last = performance.now();
   fps = 0;
-  visible = !matchMedia("(pointer: coarse)").matches;
+  visible = new URLSearchParams(location.search).has("debug");
 
   constructor() {
     this.el.hidden = !this.visible;

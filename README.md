@@ -3,10 +3,10 @@
 A browser-based 2D top-down bus driving game set on the **real map of Dhaka**, generated from
 OpenStreetMap data at build time. TypeScript + Vite + PixiJS v8 (WebGL), deployable as a static site.
 
-> Status: **Phase 4** — drive a Dhaka local bus through living traffic on the real city map:
-> rickshaws, CNGs, cars, motorcycles, buses, legunas, trucks, ambulances and police following the real
-> road graph with weak lane discipline, traffic signals and traffic police, jaywalking pedestrians and
-> vendors, fines for red lights, wrong-way driving and collisions. Routes and passengers arrive in Phase 5.
+> Status: **Phase 5** — career mode: pick one of 5 real Dhaka bus routes (stops snapped to real OSM bus
+> stops), pick up and drop off passengers, collect fares by distance, keep them happy, finish on time —
+> through living traffic (rickshaws, CNGs, buses, signals, traffic police, pedestrians) on the real
+> city map. Garage, weather and day/night arrive in Phase 6.
 
 ## Quick start
 
@@ -49,7 +49,7 @@ the nearest road, in the left lane (Bangladesh drives on the left). Graphics qua
 | Command | What it does |
 |---|---|
 | `npm run data:fetch` | Download/resume `data/raw/bangladesh-latest.osm.pbf` from Geofabrik |
-| `npm run data:build` | fetch → extract → chunk → road graph. `DHAKA_BBOX=core\|mid\|full` or `"minLat,minLon,maxLat,maxLon"`; `--force` re-extracts |
+| `npm run data:build` | fetch → extract → chunk → road graph → bus routes. `DHAKA_BBOX=core\|mid\|full` or `"minLat,minLon,maxLat,maxLon"`; `--force` re-extracts |
 | `npm run data:validate` | Feature counts, PNG renders (`docs/img/`, full-res in `data/work/`), landmark + flyover position checks |
 | `npm test` | Unit tests (geometry, format) + landmark and flyover checks against built data |
 
@@ -121,6 +121,37 @@ Geofabrik PBF ──► tools/extract.ts ──► data/work/<bbox>/features.ndj
 * **Sound**: synthesised with WebAudio for now (diesel engine following rpm/throttle, four horn
   styles including the melodic "pressure horn", brake squeal, door hiss, crash). Recorded samples
   replace these in Phase 7.
+
+## Routes, passengers and fares (Phase 5)
+
+* **5 routes** (`docs/ROUTES.md`, generated): Mirpur 10 – Farmgate (6.2 km, free), Mirpur 10 – Motijheel
+  (13.1 km), Gabtoli – Sayedabad (13.9 km), Airport – Motijheel (18.1 km), Uttara – Sadarghat
+  (23.2 km); both directions each. OSM has almost no Dhaka bus route relations, so routes are
+  defined as ordered stops (`tools/routes.config.ts`), each snapped to the matching OSM bus stop
+  (45 of 56 stops matched), and joined by the game's router; a Viterbi pass over candidate nodes
+  picks the right carriageway so the bus doesn't U-turn at stops.
+* **Driving a route** (`src/game/career/RouteRun.ts`): a guide line in the route colour, bus-stop
+  shelters with waiting passengers, and a pulsing yellow **stop box** where the front door should be.
+  Stop inside it, open the doors (`E`): passengers alight first, then board (~0.5 s each through two
+  doors). The conductor shouts the stop and onward destinations (browser speech synthesis, Bangla
+  voice when available); the PA announces the next stop 150 m before it.
+* **Seating**: 26 seats + 9 ladies' seats (women and the elderly sit there first), 20 standing, and
+  at rush hour up to 8 passengers hang off the door. Standees take seats as people leave.
+* **Fares**: BRTA city-bus rate ৳2.45/km, minimum ৳10, students half (minimum ৳5), by distance
+  between boarding and alighting stops; collected by the conductor when passengers get off. Very
+  unhappy passengers argue and pay 70%.
+* **Satisfaction** (per passenger, HUD shows the average): harsh acceleration/braking and swerving,
+  speeding, crashes, doors open while moving, standing/hanging, long waits at stops and stopping far
+  from the stop lower it; smooth driving and precise stops raise it.
+* **Penalties**: driving past a stop that had people waiting or wanting to get off (missed stop),
+  leaving passengers behind with room aboard (skipped), being late (time limit ≈ 20 km/h average + 20 s
+  per stop). Collisions are only fined when the bus was moving.
+* **Results & career**: stars (scaled by how much of the route you served), fares + on-time bonus −
+  fines go to your career money, reputation changes; buy route permits to unlock longer routes.
+  Career progress is saved in `localStorage`.
+* **Screens**: start screen (Career / Free roam), route picker (direction choice, unlock prices, best
+  stars), results, pause (`Esc`/`P`), stop list (`Tab`). `?free` skips the menu; `?debug` shows the
+  F3 overlay at start.
 
 ## Traffic (Phase 4)
 
